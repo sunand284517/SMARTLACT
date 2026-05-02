@@ -1,0 +1,27 @@
+# Backend
+flask
+flask-cors
+gunicorn
+
+# FastAPI (optional if used)
+fastapi
+uvicorn
+python-multipart
+
+# ML Libraries
+numpy
+pandas
+scikit-learn
+joblib
+
+# Visualization (optional)
+matplotlib
+seaborn
+
+# Worker (Celery + Redis)
+celery
+redis
+
+# Utilities
+requests
+python-dotenv
