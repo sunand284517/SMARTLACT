@@ -1,5 +1,6 @@
 import os
 import sys
+import ssl
 from celery import Celery
 from pymongo import MongoClient
 from bson.objectid import ObjectId
@@ -18,23 +19,24 @@ if not MONGO_URI:
     raise ValueError("❌ MONGO_URI is not set")
 
 # =========================
-# 🔥 CELERY CONFIG (Upstash TLS)
+# 🔥 CELERY SETUP
 # =========================
 app = Celery(
-    "tasks",
+    "worker",
     broker=REDIS_URL,
     backend=REDIS_URL
 )
 
-# ⚠️ Required for Upstash (TLS Redis)
+# ✅ FIX FOR Upstash (TLS Redis)
 app.conf.broker_use_ssl = {
-    "ssl_cert_reqs": None
-}
-app.conf.redis_backend_use_ssl = {
-    "ssl_cert_reqs": None
+    "ssl_cert_reqs": ssl.CERT_NONE
 }
 
-# Windows fix (safe for Render too)
+app.conf.redis_backend_use_ssl = {
+    "ssl_cert_reqs": ssl.CERT_NONE
+}
+
+# ✅ Windows / safe mode
 if sys.platform == "win32":
     app.conf.update(
         worker_pool="solo",
@@ -46,8 +48,8 @@ if sys.platform == "win32":
 # =========================
 try:
     client = MongoClient(MONGO_URI)
-    db = client.get_database("dairy-sonogram")
-    sonogram_collection = db["sonogramresults"]
+    db = client["dairy-sonogram"]
+    collection = db["sonogramresults"]
     print("✅ MongoDB Connected")
 except Exception as e:
     print("❌ MongoDB connection failed:", e)
@@ -56,15 +58,15 @@ except Exception as e:
 # =========================
 # 🔥 CELERY TASK
 # =========================
-@app.task(name="tasks.predict")
-def predict_sonogram_task(sonogram_id, image_path):
-    print(f"📥 Received Task | ID: {sonogram_id}")
+@app.task(name="predict_task")
+def predict_task(sonogram_id, image_path):
+    print(f"📥 Task received | ID: {sonogram_id}")
 
     try:
         # =========================
         # Update status → PROCESSING
         # =========================
-        sonogram_collection.update_one(
+        collection.update_one(
             {"_id": ObjectId(sonogram_id)},
             {"$set": {"status": "PROCESSING"}}
         )
@@ -72,16 +74,16 @@ def predict_sonogram_task(sonogram_id, image_path):
         print("🔄 Running ML model...")
 
         # =========================
-        # 🔥 ML MODEL INFERENCE
+        # 🔥 ML MODEL
         # =========================
         classification, confidence, predicted_yield = predict_image(image_path)
 
-        print(f"✅ Prediction Done: {classification}, {confidence}, {predicted_yield}")
+        print(f"✅ Prediction: {classification}, {confidence}, {predicted_yield}")
 
         # =========================
-        # Save result to DB
+        # Save result
         # =========================
-        sonogram_collection.update_one(
+        collection.update_one(
             {"_id": ObjectId(sonogram_id)},
             {
                 "$set": {
@@ -106,7 +108,7 @@ def predict_sonogram_task(sonogram_id, image_path):
         # =========================
         # Update status → FAILED
         # =========================
-        sonogram_collection.update_one(
+        collection.update_one(
             {"_id": ObjectId(sonogram_id)},
             {"$set": {"status": "FAILED"}}
         )
@@ -117,6 +119,6 @@ def predict_sonogram_task(sonogram_id, image_path):
         }
 
 # =========================
-# 🔥 DEBUG START LOG
+# 🔥 START LOG
 # =========================
 print("🚀 Celery Worker Started...")
