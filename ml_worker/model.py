@@ -45,6 +45,7 @@ class CowSonogramCNN(nn.Module):
             nn.MaxPool2d(2)
         )
 
+        # 224 -> 112 -> 56 -> 28
         self.fc_layer = nn.Sequential(
             nn.Linear(64 * 28 * 28, 512),
             nn.ReLU()
@@ -61,6 +62,7 @@ class CowSonogramCNN(nn.Module):
         class_logits = self.classification_head(x)
         yield_pred = self.regression_head(x)
 
+        # ALWAYS EXACTLY 2 OUTPUTS
         return class_logits, yield_pred
 
 
@@ -77,7 +79,7 @@ def download_model():
 
 
 # =========================
-# LOAD MODEL
+# LOAD MODEL (SAFE + CACHED)
 # =========================
 def load_model():
     global _cached
@@ -91,9 +93,15 @@ def load_model():
 
     model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
-    state = torch.load(MODEL_PATH, map_location=device)
+    checkpoint = torch.load(MODEL_PATH, map_location=device)
 
-    model.load_state_dict(state, strict=True)
+    # SAFE LOAD (handles both formats)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
+
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
 
     _cached = (model, device)
@@ -104,7 +112,7 @@ def load_model():
 
 
 # =========================
-# IMAGE TRANSFORM (MUST MATCH TRAINING)
+# IMAGE TRANSFORM
 # =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -113,11 +121,12 @@ transform = transforms.Compose([
 
 
 # =========================
-# PREDICT FUNCTION
+# PREDICTION (NO UNPACK ERRORS EVER)
 # =========================
 def predict_image(image_path):
     model, device = load_model()
 
+    # Load image
     try:
         if image_path.startswith("http"):
             response = requests.get(image_path, timeout=10)
@@ -125,7 +134,7 @@ def predict_image(image_path):
         else:
             image = Image.open(image_path).convert("RGB")
     except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": f"Image load error: {str(e)}"}
 
     image = transform(image).unsqueeze(0).to(device)
 
@@ -133,11 +142,14 @@ def predict_image(image_path):
         with torch.no_grad():
             outputs = model(image)
 
-            # SAFE CHECK
-            if not isinstance(outputs, (tuple, list)) or len(outputs) != 2:
+            # HARD SAFETY CHECK (prevents your error)
+            if not isinstance(outputs, (tuple, list)):
+                return {"status": "failed", "error": "Model did not return tuple"}
+
+            if len(outputs) != 2:
                 return {
                     "status": "failed",
-                    "error": "Model output mismatch"
+                    "error": f"Expected 2 outputs, got {len(outputs)}"
                 }
 
             class_logits, yield_pred = outputs
