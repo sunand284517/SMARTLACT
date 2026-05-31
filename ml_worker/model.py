@@ -1,5 +1,6 @@
 import os
 import sys
+import gdown
 from PIL import Image
 import torch
 import torch.nn as nn
@@ -70,22 +71,56 @@ class CowSonogramCNN(nn.Module):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MODEL_PATH = os.path.join(BASE_DIR, 'cow_model.pth')
 
+MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
+
+def download_model():
+    if not os.path.exists(DEFAULT_MODEL_PATH):
+        print("📥 Downloading model from Google Drive...")
+
+        url = f"https://drive.google.com/uc?id={MODEL_ID}"
+
+        gdown.download(
+            url,
+            DEFAULT_MODEL_PATH,
+            quiet=False
+        )
+
+        print("✅ Model downloaded successfully")
+
 _cached_model = None
 
 def get_model(model_path=DEFAULT_MODEL_PATH):
     global _cached_model
+
     if _cached_model is None:
+
+        download_model()
+
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found at {model_path}")
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
-        
-        # Load model weights safely
-        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-        
-        # ⚠️ CRITICAL: Forces BatchNorm to use static running tracking states instead of batch size estimation
-        model.eval() 
+            raise FileNotFoundError(
+                f"Model file not found at {model_path}"
+            )
+
+        device = torch.device(
+            'cuda' if torch.cuda.is_available() else 'cpu'
+        )
+
+        model = CowSonogramCNN(
+            num_classes=len(CLASSES)
+        ).to(device)
+
+        model.load_state_dict(
+            torch.load(
+                model_path,
+                map_location=device,
+                weights_only=True
+            )
+        )
+
+        model.eval()
+
         _cached_model = (model, device)
+
     return _cached_model
 
 def get_consistent_class(yield_val):
