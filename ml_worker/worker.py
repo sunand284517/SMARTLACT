@@ -5,7 +5,7 @@ from celery import Celery
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
-from model import predict_image, get_model
+from model import predict_image
 
 # =========================
 # 🔥 ENV VARIABLES
