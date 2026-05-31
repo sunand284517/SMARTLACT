@@ -22,8 +22,10 @@ class CowSonogramCNN(nn.Module):
         
         # Load pre-trained InceptionV3
         self.backbone = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
+        
+        # Replace the built-in FC with an Identity placeholder
         self.backbone.fc = nn.Identity()
-        self.backbone.aux_logits = False 
+        self.backbone.aux_logits = False # Simplify to avoid secondary loss
         
         # Freeze early layers
         for param in self.backbone.parameters():
@@ -70,55 +72,60 @@ class CowSonogramCNN(nn.Module):
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MODEL_PATH = os.path.join(BASE_DIR, 'cow_model.pth')
-
 MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
 
+# =========================
+# 📥 MODEL DOWNLOADER
+# =========================
 def download_model():
-    if not os.path.exists(DEFAULT_MODEL_PATH):
-        print("📥 Downloading model from Google Drive...")
+    if os.path.exists(DEFAULT_MODEL_PATH):
+        print(f"✅ Weights file already exists at: {DEFAULT_MODEL_PATH}")
+        return
 
+    try:
+        print("📥 Model file missing. Downloading from Google Drive...")
         url = f"https://drive.google.com/uc?id={MODEL_ID}"
-
+        
         gdown.download(
-            url,
-            DEFAULT_MODEL_PATH,
-            quiet=False
+            url=url,
+            output=DEFAULT_MODEL_PATH,
+            quiet=False,
+            fuzzy=True
         )
 
-        print("✅ Model downloaded successfully")
+        if not os.path.exists(DEFAULT_MODEL_PATH):
+            raise FileNotFoundError(f"❌ Download completed, but file missing at {DEFAULT_MODEL_PATH}")
+        print("✅ Model weights downloaded successfully!")
+    except Exception as e:
+        print(f"❌ Auto-download sequence failed: {e}")
+        raise e
 
+# =========================
+# 🖥️ MODEL LOADER
+# =========================
 _cached_model = None
 
 def get_model(model_path=DEFAULT_MODEL_PATH):
     global _cached_model
 
     if _cached_model is None:
-
+        # First check/download the file
         download_model()
 
         if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"Model file not found at {model_path}"
-            )
+            raise FileNotFoundError(f"Model file not found at {model_path}")
 
-        device = torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu'
-        )
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"🖥️ Initializing neural network on device: {device}")
 
-        model = CowSonogramCNN(
-            num_classes=len(CLASSES)
-        ).to(device)
+        model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
-        model.load_state_dict(
-            torch.load(
-                model_path,
-                map_location=device,
-                weights_only=True
-            )
-        )
-
-        model.eval()
-
+        # Load weights reliably
+        print("📦 Mounting model weights...")
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        
+        model.eval() # Vital for BatchNorm settings
+        print("✅ Model completely prepared for inference processing.")
         _cached_model = (model, device)
 
     return _cached_model
@@ -143,26 +150,24 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
     try:
         model, device = get_model(model_path)
 
-        # ⚠️ FIXED: Resized target dimensions from 224 to 299 to perfectly align with InceptionV3 requirement
+        # Fixed dimensions to match InceptionV3 expectation rules
         transform = transforms.Compose([
             transforms.Resize((299, 299)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        # Verify file existence before image loader initialization
         if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Target sonogram asset missing at path: {image_path}")
+            raise FileNotFoundError(f"Target sonogram missing at location: {image_path}")
 
         image = Image.open(image_path).convert('RGB')
         tensor = transform(image).unsqueeze(0).to(device)
         
-        # ⚠️ Ensure evaluation tracing scope context is isolated
         with torch.no_grad():
             class_logits, yield_pred = model(tensor)
             
             probabilities = torch.nn.functional.softmax(class_logits, dim=1)
-            confidence, predicted_idx = torch.max(probabilities, 1)
+            confidence, _ = torch.max(probabilities, 1)
             
             final_yield = yield_pred.item()
             if final_yield < 0: 
