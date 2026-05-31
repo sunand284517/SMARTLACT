@@ -46,39 +46,29 @@ if sys.platform == "win32":
 
 
 # =========================
-# MONGODB CONNECTION (FIXED)
+# MONGODB (FIXED SAFE)
 # =========================
-try:
-    client = MongoClient(
-        MONGO_URI,
-        connectTimeoutMS=5000,
-        serverSelectionTimeoutMS=5000
-    )
+client = MongoClient(
+    MONGO_URI,
+    connectTimeoutMS=5000,
+    serverSelectionTimeoutMS=5000
+)
 
-    db = client.get_default_database()
+db = client.get_database() if client.get_database() else client["dairy-sonogram"]
+collection = db["sonogramresults"]
 
-    # FIX: NO boolean check on Database object
-    if db is None:
-        db = client["dairy-sonogram"]
-
-    collection = db["sonogramresults"]
-
-    print(f"✅ MongoDB Connected successfully to database: {db.name}")
-
-except Exception as e:
-    print("❌ MongoDB connection failed:", e)
-    raise e
+print(f"✅ MongoDB Connected: {db.name}")
 
 
 # =========================
-# MODEL WARMUP (FIXED)
+# MODEL WARMUP (SAFE)
 # =========================
 try:
     print("🔥 Warming up ML model...")
     load_model()
-    print("✅ Model loaded and ready")
+    print("✅ Model ready")
 except Exception as e:
-    print("⚠️ Model warmup failed:", e)
+    print("⚠️ Model warmup failed (non-fatal):", e)
 
 
 # =========================
@@ -96,77 +86,73 @@ def safe_objectid(id_str):
 # =========================
 @app.task(name="predict_task")
 def predict_task(sonogram_id, image_path):
-    print(f"📥 Task received | Record ID: {sonogram_id}")
-    print(f"🖼️ Image URL: {image_path}")
+
+    print(f"📥 Task | {sonogram_id}")
+    print(f"🖼️ Image | {image_path}")
 
     try:
         obj_id = safe_objectid(sonogram_id)
-        if obj_id is None:
-            raise ValueError("Invalid MongoDB ObjectId")
+        if not obj_id:
+            raise ValueError("Invalid ObjectId")
 
-        # Update status → PROCESSING
         collection.update_one(
             {"_id": obj_id},
             {"$set": {"status": "PROCESSING"}}
         )
 
-        print("🔄 Running ML inference...")
+        print("🔄 Running inference...")
 
-        # =========================
-        # ML INFERENCE (FIXED)
-        # =========================
         result = predict_image(image_path)
 
+        # =========================
+        # HARD VALIDATION (IMPORTANT)
+        # =========================
         if not isinstance(result, dict):
-            raise ValueError("Model returned invalid response")
+            raise ValueError("Model returned invalid output")
 
-        if result.get("status") != "success":
-            raise Exception(result.get("error", "Unknown prediction error"))
+        if result.get("status") == "failed":
+            raise ValueError(result.get("error", "Prediction failed"))
 
-        classification = result["classification"]
-        confidence = result["confidence"]
+        classification = result.get("classification")
+        confidence = float(result.get("confidence", 0.0))
+        yield_litres = float(result.get("yield_litres", 0.0))
 
-        print(f"✅ Prediction: {classification} | Conf: {confidence:.2f}")
+        print(f"✅ {classification} | Conf={confidence:.3f}")
 
-        # =========================
-        # SAVE RESULT
-        # =========================
         collection.update_one(
             {"_id": obj_id},
             {
                 "$set": {
                     "status": "COMPLETED",
                     "classification": classification,
-                    "confidence": float(confidence)
+                    "confidence": confidence,
+                    "yield_litres": yield_litres
                 }
             }
         )
 
-        print("💾 Result saved to MongoDB")
-
         return {
             "status": "success",
             "classification": classification,
-            "confidence": float(confidence)
+            "confidence": confidence,
+            "yield_litres": yield_litres
         }
 
     except Exception as e:
-        print(f"❌ EXECUTION ERROR: {str(e)}")
 
-        try:
-            obj_id = safe_objectid(sonogram_id)
-            if obj_id:
-                collection.update_one(
-                    {"_id": obj_id},
-                    {
-                        "$set": {
-                            "status": "FAILED",
-                            "errorReason": str(e)
-                        }
+        print(f"❌ ERROR: {str(e)}")
+
+        obj_id = safe_objectid(sonogram_id)
+        if obj_id:
+            collection.update_one(
+                {"_id": obj_id},
+                {
+                    "$set": {
+                        "status": "FAILED",
+                        "errorReason": str(e)
                     }
-                )
-        except Exception as mongo_err:
-            print(f"❌ Mongo update failed: {mongo_err}")
+                }
+            )
 
         return {
             "status": "failed",
@@ -174,7 +160,4 @@ def predict_task(sonogram_id, image_path):
         }
 
 
-# =========================
-# START LOG
-# =========================
-print("🚀 Celery Worker Environment Initialized")
+print("🚀 Celery Worker Ready")
