@@ -21,6 +21,9 @@ MODEL_PATH = "cow_model.pth"
 _cached = None
 
 
+# =========================
+# 🔥 MUST MATCH TRAINED MODEL EXACTLY
+# =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
         super().__init__()
@@ -29,36 +32,48 @@ class CowSonogramCNN(nn.Module):
             nn.Conv2d(3, 16, 3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
+
             nn.Conv2d(16, 32, 3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
+
             nn.Conv2d(32, 64, 3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2)
         )
 
-        self.fc = nn.Sequential(
+        # ⚠️ THIS NAME MUST MATCH YOUR TRAINED MODEL
+        self.fc_layer = nn.Sequential(
             nn.Linear(64 * 28 * 28, 512),
             nn.ReLU()
         )
 
-        self.class_head = nn.Linear(512, num_classes)
-        self.yield_head = nn.Linear(512, 1)
+        self.classification_head = nn.Linear(512, num_classes)
+        self.regression_head = nn.Linear(512, 1)
 
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
-        x = self.fc(x)
+        x = self.fc_layer(x)
 
-        return self.class_head(x), self.yield_head(x)
+        class_logits = self.classification_head(x)
+        yield_pred = self.regression_head(x)
+
+        return class_logits, yield_pred
 
 
+# =========================
+# DOWNLOAD MODEL
+# =========================
 def download_model():
     if not os.path.exists(MODEL_PATH):
         url = f"https://drive.google.com/uc?id={MODEL_ID}"
         gdown.download(url, MODEL_PATH, quiet=False)
 
 
+# =========================
+# LOAD MODEL SAFE
+# =========================
 def load_model():
     global _cached
 
@@ -83,12 +98,18 @@ def load_model():
     return _cached
 
 
+# =========================
+# TRANSFORM
+# =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor()
 ])
 
 
+# =========================
+# PREDICT
+# =========================
 def predict_image(image_url):
     model, device = load_model()
 
@@ -106,6 +127,8 @@ def predict_image(image_url):
         conf, idx = torch.max(probs, 1)
 
         milk = float(yield_pred.item())
+
+        # safety clamp
         milk = max(0.5, min(milk, 50.0))
 
         return {
