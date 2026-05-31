@@ -1,6 +1,8 @@
 import os
 import sys
 import gdown
+import requests
+from io import BytesIO
 from PIL import Image
 import torch
 import torch.nn as nn
@@ -24,7 +26,7 @@ class CowSonogramCNN(nn.Module):
         
         # Channel configurations adjusted from [32, 64, 128, 256, 256] -> [16, 32, 64, 128, 128]
         self.features = nn.Sequential(
-            # Block 1: Input 3 channels -> 16 channels (Fixes the shape crash!)
+            # Block 1: Input 3 channels -> 16 channels
             nn.Conv2d(3, 16, kernel_size=3, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(),
@@ -154,7 +156,8 @@ def get_consistent_class(yield_val):
 
 def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
     """
-    Given an image path, return a tuple: (classification, confidence, predicted_yield).
+    Given an image path (local path OR secure cloud web URL link), 
+    return a tuple: (classification, confidence, predicted_yield).
     """
     try:
         model, device = get_model(model_path)
@@ -166,10 +169,21 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Target sonogram asset file missing at: {image_path}")
+        # ✅ HANDLE INTERNET URL WEB LINKS (Fixes Cross-Container Mismatches)
+        if image_path.startswith('http://') or image_path.startswith('https://'):
+            print(f"🌐 Fetching live sonogram byte stream from cloud storage link...")
+            response = requests.get(image_path, timeout=15)
+            if response.status_code != 200:
+                raise RuntimeError(f"Failed to pull image from URL. Status code: {response.status_code}")
+            
+            # Convert incoming web binary buffer data directly into a PIL RGB Image
+            image = Image.open(BytesIO(response.content)).convert('RGB')
+        else:
+            # Fallback handling for local file pathways (Dev mode testing)
+            if not os.path.exists(image_path):
+                raise FileNotFoundError(f"Target sonogram asset file missing at: {image_path}")
+            image = Image.open(image_path).convert('RGB')
 
-        image = Image.open(image_path).convert('RGB')
         tensor = transform(image).unsqueeze(0).to(device)
         
         with torch.no_grad():
@@ -184,6 +198,7 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
             
             consistent_class = get_consistent_class(final_yield)
             
+            # Cast raw elements to standard python types to stay safe with MongoDB BSON
             conf_val = float(confidence.item())
             yield_val = float(final_yield)
             
