@@ -5,7 +5,6 @@ from PIL import Image
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-import torchvision.models as models
 
 # Define 5 major productive stages
 CLASSES = [
@@ -16,53 +15,59 @@ CLASSES = [
     'Peri-Partum'
 ]
 
+# ==========================================
+# 🧠 CUSTOM BASIC CNN ARCHITECTURE
+# ==========================================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
         super(CowSonogramCNN, self).__init__()
         
-        # Load pre-trained InceptionV3
-        self.backbone = models.inception_v3(weights=models.Inception_V3_Weights.DEFAULT)
-        
-        # Replace the built-in FC with an Identity placeholder
-        self.backbone.fc = nn.Identity()
-        self.backbone.aux_logits = False # Simplify to avoid secondary loss
-        
-        # Freeze early layers
-        for param in self.backbone.parameters():
-            param.requires_grad = False
+        # Matches your checkpoint's exact "features.X" layer naming keys
+        self.features = nn.Sequential(
+            # Block 1: Input (3 channels) -> 224x224
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2), # -> 112x112
             
-        # Unfreeze the top Inception blocks (Mixed_7b, Mixed_7c) for fine-tuning
-        for param in self.backbone.Mixed_7b.parameters():
-            param.requires_grad = True
-        for param in self.backbone.Mixed_7c.parameters():
-            param.requires_grad = True
+            # Block 2
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2), # -> 56x56
+            
+            # Block 3
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2), # -> 28x28
+            
+            # Block 4: 128 channels x 28x28 spatial features = 100,352 halved by final maxpool
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2)  # -> 14x14 spatial grid size (256 * 14 * 14 = 50,176 features!)
+        )
         
-        in_features = 2048 
-        
-        # Upgraded 2-layer head
+        # Matches your exact 50176 input shape & 512-node intermediate hidden sizes
         self.fc_layer = nn.Sequential(
-            nn.Linear(in_features, 512),
+            nn.Linear(50176, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
             nn.Dropout(0.4)
         )
         
-        # Multi-Task Learning Heads
-        self.classification_head = nn.Linear(256, num_classes)
-        self.regression_head = nn.Linear(256, 1)
+        # Multi-Task Learning Heads tied directly to the 512 layer feature block
+        self.classification_head = nn.Linear(512, num_classes)
+        self.regression_head = nn.Linear(512, 1)
 
     def forward(self, x):
-        features = self.backbone(x)
-        
-        if isinstance(features, torch.Tensor):
-            x = features
-        else:
-            x = features.logits
-            
+        x = self.features(x)
+        x = torch.flatten(x, 1) # Flattens cleanly to [Batch, 50176]
         x = self.fc_layer(x)
         
         class_logits = self.classification_head(x)
@@ -79,11 +84,11 @@ MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
 # =========================
 def download_model():
     if os.path.exists(DEFAULT_MODEL_PATH):
-        print(f"✅ Weights file already exists at: {DEFAULT_MODEL_PATH}")
+        print(f"✅ Custom CNN weights file verified at: {DEFAULT_MODEL_PATH}")
         return
 
     try:
-        print("📥 Model file missing. Downloading from Google Drive...")
+        print("📥 Model weights missing. Downloading custom CNN checkpoint from Google Drive...")
         url = f"https://drive.google.com/uc?id={MODEL_ID}"
         
         gdown.download(
@@ -94,10 +99,10 @@ def download_model():
         )
 
         if not os.path.exists(DEFAULT_MODEL_PATH):
-            raise FileNotFoundError(f"❌ Download completed, but file missing at {DEFAULT_MODEL_PATH}")
-        print("✅ Model weights downloaded successfully!")
+            raise FileNotFoundError(f"❌ Download error: file missing at {DEFAULT_MODEL_PATH}")
+        print("✅ Custom CNN checkpoint downloaded successfully.")
     except Exception as e:
-        print(f"❌ Auto-download sequence failed: {e}")
+        print(f"❌ Auto-download error sequence triggered: {e}")
         raise e
 
 # =========================
@@ -109,23 +114,21 @@ def get_model(model_path=DEFAULT_MODEL_PATH):
     global _cached_model
 
     if _cached_model is None:
-        # First check/download the file
         download_model()
 
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found at {model_path}")
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"🖥️ Initializing neural network on device: {device}")
+        print(f"🖥️ Running custom CNN inference on target device: {device}")
 
         model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
-        # Load weights reliably
-        print("📦 Mounting model weights...")
+        print("📦 Loading model checkpoint weights...")
         model.load_state_dict(torch.load(model_path, map_location=device))
         
-        model.eval() # Vital for BatchNorm settings
-        print("✅ Model completely prepared for inference processing.")
+        model.eval() # Essential for turning off Dropout and forcing BatchNorm tracking
+        print("✅ Custom basic CNN model loaded and ready.")
         _cached_model = (model, device)
 
     return _cached_model
@@ -150,15 +153,15 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
     try:
         model, device = get_model(model_path)
 
-        # Fixed dimensions to match InceptionV3 expectation rules
+        # Uses the standard 224x224 shape to generate the 50176 flattened features
         transform = transforms.Compose([
-            transforms.Resize((299, 299)),
+            transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
         if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Target sonogram missing at location: {image_path}")
+            raise FileNotFoundError(f"Target sonogram asset file missing at: {image_path}")
 
         image = Image.open(image_path).convert('RGB')
         tensor = transform(image).unsqueeze(0).to(device)
@@ -177,5 +180,5 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
             
         return consistent_class, confidence.item(), final_yield
     except Exception as e:
-        print(f"Error during real inference: {e}")
+        print(f"Error during custom CNN inference: {e}")
         raise RuntimeError(f"Inference failed: {e}")
