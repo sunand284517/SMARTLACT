@@ -1,14 +1,14 @@
 import os
-import gdown
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
+import requests
 from io import BytesIO
 from PIL import Image
-import requests
+import gdown
 
 # =========================
-# CLASS LABELS
+# LABELS
 # =========================
 CLASSES = [
     'Dry Period',
@@ -19,7 +19,7 @@ CLASSES = [
 ]
 
 # =========================
-# MODEL ARCHITECTURE
+# MODEL ARCHITECTURE (MUST MATCH TRAINED MODEL)
 # =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
@@ -27,84 +27,56 @@ class CowSonogramCNN(nn.Module):
 
         self.features = nn.Sequential(
             nn.Conv2d(3, 16, 3, padding=1),
-            nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
             nn.Conv2d(16, 32, 3, padding=1),
-            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2),
 
             nn.Conv2d(32, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(128, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2)
         )
 
-        self.fc1 = nn.Linear(6272, 512)
-        self.bn1 = nn.BatchNorm1d(512)
-
-        self.fc2 = nn.Linear(512, 512)
-        self.bn2 = nn.BatchNorm1d(512)
-
-        self.classification_head = nn.Linear(512, num_classes)
+        self.fc = nn.Linear(64 * 28 * 28, num_classes)
 
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
-
-        x = torch.relu(self.bn1(self.fc1(x)))
-        x = torch.relu(self.bn2(self.fc2(x)))
-
-        return self.classification_head(x)
+        x = self.fc(x)
+        return x
 
 
 # =========================
-# MODEL CONFIG
+# GOOGLE DRIVE MODEL CONFIG
 # =========================
 MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "cow_model.pth")
+MODEL_PATH = "cow_model.pth"
 
 _cached_model = None
 
 
 # =========================
-# DOWNLOAD MODEL FROM DRIVE
+# DOWNLOAD MODEL
 # =========================
 def download_model():
     if os.path.exists(MODEL_PATH):
-        print("✅ Model already exists locally")
         return
 
     print("📥 Downloading model from Google Drive...")
 
     url = f"https://drive.google.com/uc?id={MODEL_ID}"
-
     gdown.download(url, MODEL_PATH, quiet=False)
 
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError("❌ Model download failed from Google Drive")
-
-    print("✅ Model downloaded successfully")
+        raise Exception("Model download failed")
 
 
 # =========================
-# LOAD MODEL (CACHE SAFE)
+# LOAD MODEL
 # =========================
-def get_model():
+def load_model():
     global _cached_model
 
     if _cached_model is not None:
@@ -118,7 +90,7 @@ def get_model():
 
     state = torch.load(MODEL_PATH, map_location=device)
 
-    # IMPORTANT: strict=True ensures correct architecture match
+    # IMPORTANT: must match checkpoint EXACTLY
     model.load_state_dict(state, strict=True)
 
     model.eval()
@@ -129,7 +101,7 @@ def get_model():
 
 
 # =========================
-# IMAGE PREPROCESSING
+# IMAGE TRANSFORM
 # =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -138,27 +110,24 @@ transform = transforms.Compose([
 
 
 # =========================
-# PREDICTION FUNCTION
+# PREDICT FUNCTION
 # =========================
 def predict_image(image_path):
-    model, device = get_model()
+    model, device = load_model()
 
-    # Load image (URL or local)
+    # Load image
     if image_path.startswith("http"):
-        response = requests.get(image_path, timeout=15)
+        response = requests.get(image_path)
         image = Image.open(BytesIO(response.content)).convert("RGB")
     else:
         image = Image.open(image_path).convert("RGB")
 
-    tensor = transform(image).unsqueeze(0).to(device)
+    image = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        logits = model(tensor)
+        logits = model(image)
         probs = torch.softmax(logits, dim=1)
 
-        confidence, idx = torch.max(probs, 1)
+        conf, idx = torch.max(probs, 1)
 
-        label = CLASSES[idx.item()]
-        conf = float(confidence.item())
-
-    return label, conf
+    return CLASSES[idx.item()], float(conf.item())
