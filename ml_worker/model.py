@@ -8,7 +8,7 @@ import gdown
 import os
 
 # =========================
-# LABELS (MUST MATCH TRAINING)
+# LABELS
 # =========================
 CLASSES = [
     'Dry Period',
@@ -25,11 +25,11 @@ _cached = None
 
 
 # =========================
-# MODEL (EXACT TRAINING MATCH)
+# MODEL (TRAINING MATCH)
 # =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
-        super(CowSonogramCNN, self).__init__()
+        super().__init__()
 
         self.features = nn.Sequential(
             nn.Conv2d(3, 16, 3, padding=1),
@@ -45,7 +45,6 @@ class CowSonogramCNN(nn.Module):
             nn.MaxPool2d(2)
         )
 
-        # 224 -> 112 -> 56 -> 28
         self.fc_layer = nn.Sequential(
             nn.Linear(64 * 28 * 28, 512),
             nn.ReLU()
@@ -62,8 +61,8 @@ class CowSonogramCNN(nn.Module):
         class_logits = self.classification_head(x)
         yield_pred = self.regression_head(x)
 
-        # ALWAYS EXACTLY 2 OUTPUTS
-        return class_logits, yield_pred
+        # ALWAYS RETURN EXACTLY 2 VALUES
+        return (class_logits, yield_pred)
 
 
 # =========================
@@ -79,7 +78,7 @@ def download_model():
 
 
 # =========================
-# LOAD MODEL (SAFE + CACHED)
+# LOAD MODEL (SAFE + CACHE)
 # =========================
 def load_model():
     global _cached
@@ -95,7 +94,7 @@ def load_model():
 
     checkpoint = torch.load(MODEL_PATH, map_location=device)
 
-    # SAFE LOAD (handles both formats)
+    # SAFE CHECKPOINT HANDLING
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
     else:
@@ -121,12 +120,12 @@ transform = transforms.Compose([
 
 
 # =========================
-# PREDICTION (NO UNPACK ERRORS EVER)
+# PREDICT FUNCTION (ROBUST)
 # =========================
 def predict_image(image_path):
     model, device = load_model()
 
-    # Load image
+    # Load image safely
     try:
         if image_path.startswith("http"):
             response = requests.get(image_path, timeout=10)
@@ -134,7 +133,10 @@ def predict_image(image_path):
         else:
             image = Image.open(image_path).convert("RGB")
     except Exception as e:
-        return {"status": "failed", "error": f"Image load error: {str(e)}"}
+        return {
+            "status": "failed",
+            "error": f"Image loading error: {str(e)}"
+        }
 
     image = transform(image).unsqueeze(0).to(device)
 
@@ -142,9 +144,12 @@ def predict_image(image_path):
         with torch.no_grad():
             outputs = model(image)
 
-            # HARD SAFETY CHECK (prevents your error)
+            # HARD SAFETY CHECK
             if not isinstance(outputs, (tuple, list)):
-                return {"status": "failed", "error": "Model did not return tuple"}
+                return {
+                    "status": "failed",
+                    "error": f"Invalid output type: {type(outputs)}"
+                }
 
             if len(outputs) != 2:
                 return {
@@ -165,4 +170,7 @@ def predict_image(image_path):
             }
 
     except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        return {
+            "status": "failed",
+            "error": str(e)
+        }
