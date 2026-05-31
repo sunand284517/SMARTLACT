@@ -1,10 +1,12 @@
+// src/api.js
+
 import axios from 'axios';
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: 'https://smartlact-51.onrender.com/api', // ✅ your backend URL
 });
 
-// Add a request interceptor to add the auth token to headers
+// ✅ Request interceptor (adds token)
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -13,20 +15,16 @@ api.interceptors.request.use(
     }
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Add a response interceptor to handle token expiration/401s
+// ✅ Response interceptor (handles 401)
 api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
+  (response) => response,
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
-      // Force redirect to login if token is invalid, but handled in AuthContext instead to avoid full reload if possible
+      window.location.href = '/login'; // optional redirect
     }
     return Promise.reject(error);
   }
