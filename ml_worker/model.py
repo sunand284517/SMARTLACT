@@ -72,7 +72,6 @@ class CowSonogramCNN(nn.Module):
         self.regression_head = nn.Linear(512, 1)
 
     def forward(self, x):
-        # Pass through the custom convolutional architecture pipeline
         x = self.backbone(x)
         x = torch.flatten(x, 1) # Flattens output map tightly to [Batch, 50176]
         x = self.fc_layer(x)
@@ -98,11 +97,11 @@ def download_model():
         print("📥 Model weights missing. Downloading custom architecture checkpoint from Google Drive...")
         url = f"https://drive.google.com/uc?id={MODEL_ID}"
         
+        # ✅ FIXED: Removed 'fuzzy=True' keyword argument entirely to support older gdown versions on Railway
         gdown.download(
             url=url,
             output=DEFAULT_MODEL_PATH,
-            quiet=False,
-            fuzzy=True
+            quiet=False
         )
 
         if not os.path.exists(DEFAULT_MODEL_PATH):
@@ -132,7 +131,6 @@ def get_model(model_path=DEFAULT_MODEL_PATH):
         model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
         print("📦 Mounting model checkpoint layer parameters...")
-        # Strict mode set back to True because the layers are now fully, perfectly mapped!
         model.load_state_dict(torch.load(model_path, map_location=device))
         
         model.eval() # Vital to correctly pause Dropout layer sequences
@@ -186,7 +184,13 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
             
             consistent_class = get_consistent_class(final_yield)
             
-        return consistent_class, confidence.item(), final_yield
+            # ✅ SAFEGUARD AGAINST CRASHES: Explicitly extract primitive float objects 
+            # This stops MongoDB from throwing errors when handling raw PyTorch tensors.
+            conf_val = float(confidence.item())
+            yield_val = float(final_yield)
+            
+        return consistent_class, conf_val, yield_val
+        
     except Exception as e:
         print(f"Error during custom CNN inference execution: {e}")
         raise RuntimeError(f"Inference failed: {e}")
