@@ -19,7 +19,15 @@ CLASSES = [
 ]
 
 # =========================
-# MODEL ARCHITECTURE (MUST MATCH TRAINED MODEL)
+# MODEL ID (GOOGLE DRIVE)
+# =========================
+MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
+MODEL_PATH = "cow_model.pth"
+
+_cached = None
+
+# =========================
+# MODEL ARCHITECTURE (MATCHS YOUR .PTH)
 # =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
@@ -39,26 +47,27 @@ class CowSonogramCNN(nn.Module):
             nn.MaxPool2d(2)
         )
 
-        self.fc = nn.Linear(64 * 28 * 28, num_classes)
+        self.fc_layer = nn.Sequential(
+            nn.Linear(64 * 28 * 28, 512),
+            nn.ReLU()
+        )
+
+        self.classification_head = nn.Linear(512, num_classes)
+        self.regression_head = nn.Linear(512, 1)
 
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
-        x = self.fc(x)
-        return x
+        x = self.fc_layer(x)
+
+        class_logits = self.classification_head(x)
+        yield_pred = self.regression_head(x)
+
+        return class_logits, yield_pred
 
 
 # =========================
-# GOOGLE DRIVE MODEL CONFIG
-# =========================
-MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
-MODEL_PATH = "cow_model.pth"
-
-_cached_model = None
-
-
-# =========================
-# DOWNLOAD MODEL
+# DOWNLOAD MODEL FROM DRIVE
 # =========================
 def download_model():
     if os.path.exists(MODEL_PATH):
@@ -70,17 +79,17 @@ def download_model():
     gdown.download(url, MODEL_PATH, quiet=False)
 
     if not os.path.exists(MODEL_PATH):
-        raise Exception("Model download failed")
+        raise Exception("❌ Model download failed")
 
 
 # =========================
-# LOAD MODEL
+# LOAD MODEL (CACHE)
 # =========================
 def load_model():
-    global _cached_model
+    global _cached
 
-    if _cached_model is not None:
-        return _cached_model
+    if _cached:
+        return _cached
 
     download_model()
 
@@ -90,14 +99,14 @@ def load_model():
 
     state = torch.load(MODEL_PATH, map_location=device)
 
-    # IMPORTANT: must match checkpoint EXACTLY
     model.load_state_dict(state, strict=True)
-
     model.eval()
 
-    _cached_model = (model, device)
+    _cached = (model, device)
 
-    return _cached_model
+    print("✅ Model loaded successfully")
+
+    return _cached
 
 
 # =========================
@@ -115,7 +124,7 @@ transform = transforms.Compose([
 def predict_image(image_path):
     model, device = load_model()
 
-    # Load image
+    # Load image (URL or local)
     if image_path.startswith("http"):
         response = requests.get(image_path)
         image = Image.open(BytesIO(response.content)).convert("RGB")
@@ -125,9 +134,13 @@ def predict_image(image_path):
     image = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        logits = model(image)
-        probs = torch.softmax(logits, dim=1)
+        class_logits, yield_pred = model(image)
 
+        probs = torch.softmax(class_logits, dim=1)
         conf, idx = torch.max(probs, 1)
 
-    return CLASSES[idx.item()], float(conf.item())
+        classification = CLASSES[idx.item()]
+        confidence = float(conf.item())
+        predicted_yield = float(yield_pred.item())
+
+    return classification, confidence, predicted_yield
