@@ -1,84 +1,115 @@
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+import gdown
 import os
-import ssl
-from celery import Celery
-from pymongo import MongoClient
-from bson.objectid import ObjectId
+import requests
+from io import BytesIO
+from PIL import Image
 
-from model import predict_image
+CLASSES = [
+    'Dry Period',
+    'Peak Lactation',
+    'Late Lactation',
+    'Fresh Cows',
+    'Peri-Partum'
+]
 
-# =========================
-# ENV
-# =========================
-REDIS_URL = os.environ.get("CELERY_BROKER_URL")
-MONGO_URI = os.environ.get("MONGO_URI")
+MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
+MODEL_PATH = "cow_model.pth"
 
-if not REDIS_URL:
-    raise ValueError("CELERY_BROKER_URL missing")
-
-if not MONGO_URI:
-    raise ValueError("MONGO_URI missing")
+_cached = None
 
 
-# =========================
-# CELERY
-# =========================
-app = Celery(
-    "worker",
-    broker=REDIS_URL,
-    backend=REDIS_URL,
-    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
-    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE}
-)
+class CowSonogramCNN(nn.Module):
+    def __init__(self, num_classes=5):
+        super().__init__()
 
-
-# =========================
-# MONGO FIX (IMPORTANT)
-# =========================
-client = MongoClient(MONGO_URI)
-db = client["dairy-sonogram"]
-collection = db["sonogramresults"]
-
-print("✅ MongoDB Connected")
-
-
-# =========================
-# TASK
-# =========================
-@app.task(name="predict_task")
-def predict_task(sonogram_id, image_url):
-
-    print("Task received:", sonogram_id)
-
-    try:
-        collection.update_one(
-            {"_id": ObjectId(sonogram_id)},
-            {"$set": {"status": "PROCESSING"}}
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 16, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(16, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2)
         )
 
-        print("Running inference...")
-
-        result = predict_image(image_url)
-
-        print("Prediction:", result)
-
-        collection.update_one(
-            {"_id": ObjectId(sonogram_id)},
-            {"$set": {
-                "status": "COMPLETED",
-                "classification": result["class"],
-                "confidence": result["confidence"],
-                "milk_yield": result["milk_yield_liters"]
-            }}
+        self.fc = nn.Sequential(
+            nn.Linear(64 * 28 * 28, 512),
+            nn.ReLU()
         )
 
-        return {"status": "success", "result": result}
+        self.class_head = nn.Linear(512, num_classes)
+        self.yield_head = nn.Linear(512, 1)
 
-    except Exception as e:
-        print("ERROR:", str(e))
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
 
-        collection.update_one(
-            {"_id": ObjectId(sonogram_id)},
-            {"$set": {"status": "FAILED", "error": str(e)}}
-        )
+        return self.class_head(x), self.yield_head(x)
 
-        return {"status": "failed", "error": str(e)}
+
+def download_model():
+    if not os.path.exists(MODEL_PATH):
+        url = f"https://drive.google.com/uc?id={MODEL_ID}"
+        gdown.download(url, MODEL_PATH, quiet=False)
+
+
+def load_model():
+    global _cached
+
+    if _cached:
+        return _cached
+
+    download_model()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = CowSonogramCNN(len(CLASSES)).to(device)
+
+    state = torch.load(MODEL_PATH, map_location=device)
+
+    if isinstance(state, dict) and "model_state_dict" in state:
+        state = state["model_state_dict"]
+
+    model.load_state_dict(state, strict=True)
+    model.eval()
+
+    _cached = (model, device)
+    return _cached
+
+
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor()
+])
+
+
+def predict_image(image_url):
+    model, device = load_model()
+
+    if image_url.startswith("http"):
+        img = Image.open(BytesIO(requests.get(image_url).content)).convert("RGB")
+    else:
+        img = Image.open(image_url).convert("RGB")
+
+    x = transform(img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        class_logits, yield_pred = model(x)
+
+        probs = torch.softmax(class_logits, dim=1)
+        conf, idx = torch.max(probs, 1)
+
+        milk = float(yield_pred.item())
+        milk = max(0.5, min(milk, 50.0))
+
+        return {
+            "class": CLASSES[idx.item()],
+            "confidence": float(conf.item()),
+            "milk_yield_liters": milk
+        }
