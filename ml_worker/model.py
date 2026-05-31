@@ -1,11 +1,11 @@
 import os
-import requests
-from io import BytesIO
-from PIL import Image
-
+import gdown
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
+from io import BytesIO
+from PIL import Image
+import requests
 
 # =========================
 # CLASS LABELS
@@ -54,6 +54,7 @@ class CowSonogramCNN(nn.Module):
 
         self.fc1 = nn.Linear(6272, 512)
         self.bn1 = nn.BatchNorm1d(512)
+
         self.fc2 = nn.Linear(512, 512)
         self.bn2 = nn.BatchNorm1d(512)
 
@@ -66,29 +67,50 @@ class CowSonogramCNN(nn.Module):
         x = torch.relu(self.bn1(self.fc1(x)))
         x = torch.relu(self.bn2(self.fc2(x)))
 
-        class_logits = self.classification_head(x)
-        return class_logits
+        return self.classification_head(x)
 
 
 # =========================
-# MODEL PATH
+# MODEL CONFIG
 # =========================
+MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cow_model.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "cow_model.pth")
 
-_cached = None
+_cached_model = None
+
 
 # =========================
-# LOAD MODEL
+# DOWNLOAD MODEL FROM DRIVE
 # =========================
-def get_model():
-    global _cached
+def download_model():
+    if os.path.exists(MODEL_PATH):
+        print("✅ Model already exists locally")
+        return
 
-    if _cached is not None:
-        return _cached
+    print("📥 Downloading model from Google Drive...")
+
+    url = f"https://drive.google.com/uc?id={MODEL_ID}"
+
+    gdown.download(url, MODEL_PATH, quiet=False)
 
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError("Model file not found. Please upload correct cow_model.pth")
+        raise FileNotFoundError("❌ Model download failed from Google Drive")
+
+    print("✅ Model downloaded successfully")
+
+
+# =========================
+# LOAD MODEL (CACHE SAFE)
+# =========================
+def get_model():
+    global _cached_model
+
+    if _cached_model is not None:
+        return _cached_model
+
+    download_model()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -96,17 +118,18 @@ def get_model():
 
     state = torch.load(MODEL_PATH, map_location=device)
 
-    # STRICT LOADING (IMPORTANT FIX)
+    # IMPORTANT: strict=True ensures correct architecture match
     model.load_state_dict(state, strict=True)
 
     model.eval()
 
-    _cached = (model, device)
-    return _cached
+    _cached_model = (model, device)
+
+    return _cached_model
 
 
 # =========================
-# TRANSFORM
+# IMAGE PREPROCESSING
 # =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -120,7 +143,7 @@ transform = transforms.Compose([
 def predict_image(image_path):
     model, device = get_model()
 
-    # Load image
+    # Load image (URL or local)
     if image_path.startswith("http"):
         response = requests.get(image_path, timeout=15)
         image = Image.open(BytesIO(response.content)).convert("RGB")
@@ -133,9 +156,9 @@ def predict_image(image_path):
         logits = model(tensor)
         probs = torch.softmax(logits, dim=1)
 
-        confidence, predicted_idx = torch.max(probs, 1)
+        confidence, idx = torch.max(probs, 1)
 
-        label = CLASSES[predicted_idx.item()]
+        label = CLASSES[idx.item()]
         conf = float(confidence.item())
 
     return label, conf
