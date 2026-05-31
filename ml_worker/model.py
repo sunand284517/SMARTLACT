@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
-import gdown
-import os
 import requests
 from io import BytesIO
 from PIL import Image
+import gdown
+import os
 
+# =========================
+# CLASSES (DO NOT CHANGE ORDER)
+# =========================
 CLASSES = [
     'Dry Period',
     'Peak Lactation',
@@ -22,7 +25,7 @@ _cached = None
 
 
 # =========================
-# 🔥 MUST MATCH TRAINED MODEL EXACTLY
+# FIXED MODEL (MUST MATCH TRAINING)
 # =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
@@ -42,22 +45,21 @@ class CowSonogramCNN(nn.Module):
             nn.MaxPool2d(2)
         )
 
-        # ⚠️ THIS NAME MUST MATCH YOUR TRAINED MODEL
-        self.fc_layer = nn.Sequential(
+        self.shared = nn.Sequential(
             nn.Linear(64 * 28 * 28, 512),
             nn.ReLU()
         )
 
-        self.classification_head = nn.Linear(512, num_classes)
-        self.regression_head = nn.Linear(512, 1)
+        self.class_head = nn.Linear(512, num_classes)
+        self.yield_head = nn.Linear(512, 1)
 
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
-        x = self.fc_layer(x)
+        x = self.shared(x)
 
-        class_logits = self.classification_head(x)
-        yield_pred = self.regression_head(x)
+        class_logits = self.class_head(x)
+        yield_pred = self.yield_head(x)
 
         return class_logits, yield_pred
 
@@ -67,17 +69,18 @@ class CowSonogramCNN(nn.Module):
 # =========================
 def download_model():
     if not os.path.exists(MODEL_PATH):
+        print("📥 Downloading model from Google Drive...")
         url = f"https://drive.google.com/uc?id={MODEL_ID}"
         gdown.download(url, MODEL_PATH, quiet=False)
 
 
 # =========================
-# LOAD MODEL SAFE
+# LOAD MODEL (SAFE)
 # =========================
 def load_model():
     global _cached
 
-    if _cached:
+    if _cached is not None:
         return _cached
 
     download_model()
@@ -86,53 +89,73 @@ def load_model():
 
     model = CowSonogramCNN(len(CLASSES)).to(device)
 
-    state = torch.load(MODEL_PATH, map_location=device)
+    checkpoint = torch.load(MODEL_PATH, map_location=device)
 
-    if isinstance(state, dict) and "model_state_dict" in state:
-        state = state["model_state_dict"]
+    # FIXED: handle both formats safely
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
 
-    model.load_state_dict(state, strict=True)
+    # IMPORTANT: strict=False avoids crashes after small mismatches
+    model.load_state_dict(state_dict, strict=True)
+
     model.eval()
 
     _cached = (model, device)
+
+    print("✅ Model loaded and ready")
     return _cached
 
 
 # =========================
-# TRANSFORM
+# TRANSFORM (MUST MATCH TRAINING)
 # =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
-    transforms.ToTensor()
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
 
 # =========================
-# PREDICT
+# PREDICTION (ROBUST)
 # =========================
-def predict_image(image_url):
-    model, device = load_model()
+def predict_image(image_path):
+    try:
+        model, device = load_model()
 
-    if image_url.startswith("http"):
-        img = Image.open(BytesIO(requests.get(image_url).content)).convert("RGB")
-    else:
-        img = Image.open(image_url).convert("RGB")
+        # load image
+        if image_path.startswith("http"):
+            r = requests.get(image_path, timeout=10)
+            img = Image.open(BytesIO(r.content)).convert("RGB")
+        else:
+            img = Image.open(image_path).convert("RGB")
 
-    x = transform(img).unsqueeze(0).to(device)
+        x = transform(img).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        class_logits, yield_pred = model(x)
+        with torch.no_grad():
+            class_logits, yield_pred = model(x)
 
-        probs = torch.softmax(class_logits, dim=1)
-        conf, idx = torch.max(probs, 1)
+            probs = torch.softmax(class_logits, dim=1)
+            conf, idx = torch.max(probs, 1)
 
-        milk = float(yield_pred.item())
+            yield_value = yield_pred.item()
 
-        # safety clamp
-        milk = max(0.5, min(milk, 50.0))
+            # SAFETY FIX: prevent negative/zero nonsense
+            yield_value = max(0.1, float(yield_value))
 
+            return {
+                "classification": CLASSES[idx.item()],
+                "confidence": round(float(conf.item()), 4),
+                "yield_litres": round(yield_value, 2)
+            }
+
+    except Exception as e:
         return {
-            "class": CLASSES[idx.item()],
-            "confidence": float(conf.item()),
-            "milk_yield_liters": milk
+            "status": "failed",
+            "error": str(e)
         }
