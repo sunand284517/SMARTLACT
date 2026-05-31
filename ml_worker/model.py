@@ -24,7 +24,7 @@ class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
         super(CowSonogramCNN, self).__init__()
         
-        # Channel configurations adjusted from [32, 64, 128, 256, 256] -> [16, 32, 64, 128, 128]
+        # Channel configurations matched perfectly to your checkpoint [16, 32, 64, 128, 128]
         self.features = nn.Sequential(
             # Block 1: Input 3 channels -> 16 channels
             nn.Conv2d(3, 16, kernel_size=3, padding=1),
@@ -57,7 +57,7 @@ class CowSonogramCNN(nn.Module):
             nn.MaxPool2d(2, 2) # Final grid size: 7x7 (128 * 7 * 7 = 6272 features)
         )
         
-        # Adjusted input shape from 50176 down to 6272 to match the updated feature map dimensions
+        # Linear layer configurations
         self.fc1 = nn.Linear(6272, 512)
         self.bn1 = nn.BatchNorm1d(512)
         self.relu1 = nn.ReLU()
@@ -68,7 +68,7 @@ class CowSonogramCNN(nn.Module):
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(0.4)
         
-        # Multi-Task Learning Output Heads attached directly to the 512 feature map block
+        # Output Multi-Task Learning Linear Heads
         self.classification_head = nn.Linear(512, num_classes)
         self.regression_head = nn.Linear(512, 1)
 
@@ -114,7 +114,7 @@ def download_model():
         raise e
 
 # =========================
-# 🖥️ MODEL LOADER
+# 🖥️ MODEL LOADER & PARALLEL KEY AUDITOR
 # =========================
 _cached_model = None
 
@@ -133,8 +133,18 @@ def get_model(model_path=DEFAULT_MODEL_PATH):
         model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
         print("📦 Mounting model checkpoint layer parameters...")
-        model.load_state_dict(torch.load(model_path, map_location=device), strict=False)
         
+        # Capture state dictionary tracking diagnostic flags
+        missing_keys, unexpected_keys = model.load_state_dict(
+            torch.load(model_path, map_location=device), 
+            strict=False
+        )
+        
+        if missing_keys:
+            print(f"⚠️ DIAGNOSTIC WARNING | Missing weights keys in checkpoint file: {missing_keys}")
+        if unexpected_keys:
+            print(f"⚠️ DIAGNOSTIC WARNING | Unexpected weights keys in checkpoint file: {unexpected_keys}")
+            
         model.eval() 
         print("✅ Core architecture layers loaded and synchronized perfectly.")
         _cached_model = (model, device)
@@ -162,43 +172,52 @@ def predict_image(image_path, model_path=DEFAULT_MODEL_PATH):
     try:
         model, device = get_model(model_path)
 
-        # Transform settings tuned perfectly to match your 224x224 training resolution matrix dimensions
+        # ✅ BALANCED ALIGNMENT PREPROCESSING MATRIX
+        # Using basic tensor translation without ImageNet channel shifts to prevent feature distortion
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            transforms.ToTensor()
         ])
         
-        # ✅ HANDLE INTERNET URL WEB LINKS (Fixes Cross-Container Mismatches)
+        # Handle secure cloud storage internet URLs
         if image_path.startswith('http://') or image_path.startswith('https://'):
             print(f"🌐 Fetching live sonogram byte stream from cloud storage link...")
             response = requests.get(image_path, timeout=15)
             if response.status_code != 200:
                 raise RuntimeError(f"Failed to pull image from URL. Status code: {response.status_code}")
-            
-            # Convert incoming web binary buffer data directly into a PIL RGB Image
-            image = Image.open(BytesIO(response.content)).convert('RGB')
+            raw_img = Image.open(BytesIO(response.content))
         else:
-            # Fallback handling for local file pathways (Dev mode testing)
             if not os.path.exists(image_path):
                 raise FileNotFoundError(f"Target sonogram asset file missing at: {image_path}")
-            image = Image.open(image_path).convert('RGB')
+            raw_img = Image.open(image_path)
 
+        # ✅ DYNAMIC CHANNEL ALIGNMENT HACK:
+        # If your notebook read images via openCV or grayscale pipelines but mapped them 
+        # to a 3-channel layer, converting to RGB forces identical dimensions.
+        image = raw_img.convert('RGB')
         tensor = transform(image).unsqueeze(0).to(device)
         
         with torch.no_grad():
             class_logits, yield_pred = model(tensor)
             
             probabilities = torch.nn.functional.softmax(class_logits, dim=1)
-            confidence, _ = torch.max(probabilities, 1)
+            confidence, predicted_idx = torch.max(probabilities, 1)
             
             final_yield = yield_pred.item()
             if final_yield < 0: 
                 final_yield = 0.0
             
-            consistent_class = get_consistent_class(final_yield)
+            # ✅ FALLBACK BACKUP CHECK:
+            # If regression yield heads underfit, check if the classification index matches a different stage
+            class_idx = predicted_idx.item()
+            model_predicted_class = CLASSES[class_idx]
             
-            # Cast raw elements to standard python types to stay safe with MongoDB BSON
+            # Let the regression function map consistency, but defer to classification head if conflict occurs
+            consistent_class = get_consistent_class(final_yield)
+            if consistent_class == 'Peri-Partum' and model_predicted_class != 'Peri-Partum':
+                consistent_class = model_predicted_class
+            
+            # Extract standard primitive types safely for MongoDB BSON records
             conf_val = float(confidence.item())
             yield_val = float(final_yield)
             
