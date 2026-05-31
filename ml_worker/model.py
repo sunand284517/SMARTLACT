@@ -26,8 +26,9 @@ MODEL_PATH = "cow_model.pth"
 
 _cached = None
 
+
 # =========================
-# MODEL ARCHITECTURE (MATCHS YOUR .PTH)
+# MODEL ARCHITECTURE (FIXED)
 # =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
@@ -44,11 +45,13 @@ class CowSonogramCNN(nn.Module):
 
             nn.Conv2d(32, 64, 3, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(2)
+
+            # ✅ FIX: avoids shape mismatch issues
+            nn.AdaptiveAvgPool2d((7, 7))
         )
 
         self.fc_layer = nn.Sequential(
-            nn.Linear(64 * 28 * 28, 512),
+            nn.Linear(64 * 7 * 7, 512),
             nn.ReLU()
         )
 
@@ -63,11 +66,12 @@ class CowSonogramCNN(nn.Module):
         class_logits = self.classification_head(x)
         yield_pred = self.regression_head(x)
 
+        # always return exactly 2 values
         return class_logits, yield_pred
 
 
 # =========================
-# DOWNLOAD MODEL FROM DRIVE
+# DOWNLOAD MODEL
 # =========================
 def download_model():
     if os.path.exists(MODEL_PATH):
@@ -83,12 +87,12 @@ def download_model():
 
 
 # =========================
-# LOAD MODEL (CACHE)
+# LOAD MODEL (CACHED)
 # =========================
 def load_model():
     global _cached
 
-    if _cached:
+    if _cached is not None:
         return _cached
 
     download_model()
@@ -98,8 +102,8 @@ def load_model():
     model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
     state = torch.load(MODEL_PATH, map_location=device)
-
     model.load_state_dict(state, strict=True)
+
     model.eval()
 
     _cached = (model, device)
@@ -119,28 +123,55 @@ transform = transforms.Compose([
 
 
 # =========================
-# PREDICT FUNCTION
+# PREDICT FUNCTION (SAFE)
 # =========================
 def predict_image(image_path):
     model, device = load_model()
 
-    # Load image (URL or local)
-    if image_path.startswith("http"):
-        response = requests.get(image_path)
-        image = Image.open(BytesIO(response.content)).convert("RGB")
-    else:
-        image = Image.open(image_path).convert("RGB")
+    # Load image safely
+    try:
+        if image_path.startswith("http"):
+            response = requests.get(image_path, timeout=10)
+            image = Image.open(BytesIO(response.content)).convert("RGB")
+        else:
+            image = Image.open(image_path).convert("RGB")
+    except Exception as e:
+        return {
+            "status": "failed",
+            "error": f"Image loading failed: {str(e)}"
+        }
 
     image = transform(image).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        class_logits, yield_pred = model(image)
+    try:
+        with torch.no_grad():
+            outputs = model(image)
 
-        probs = torch.softmax(class_logits, dim=1)
-        conf, idx = torch.max(probs, 1)
+            # ✅ SAFE UNPACKING
+            if not isinstance(outputs, (tuple, list)) or len(outputs) != 2:
+                return {
+                    "status": "failed",
+                    "error": f"Unexpected model output: {type(outputs)}"
+                }
 
-        classification = CLASSES[idx.item()]
-        confidence = float(conf.item())
-        predicted_yield = float(yield_pred.item())
+            class_logits, yield_pred = outputs
 
-    return classification, confidence, predicted_yield
+            probs = torch.softmax(class_logits, dim=1)
+            conf, idx = torch.max(probs, 1)
+
+            classification = CLASSES[idx.item()]
+            confidence = float(conf.item())
+            predicted_yield = float(yield_pred.item())
+
+        return {
+            "status": "success",
+            "classification": classification,
+            "confidence": confidence,
+            "predicted_yield": predicted_yield
+        }
+
+    except Exception as e:
+        return {
+            "status": "failed",
+            "error": str(e)
+        }
