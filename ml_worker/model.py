@@ -74,7 +74,7 @@ class CowSonogramCNN(nn.Module):
 # MODEL PATH
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "cow_model.pth")
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cow_model.pth")
 
 _cached = None
 
