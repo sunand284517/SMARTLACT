@@ -46,7 +46,7 @@ if sys.platform == "win32":
 
 
 # =========================
-# MONGODB CONNECTION
+# MONGODB CONNECTION (FIXED)
 # =========================
 try:
     client = MongoClient(
@@ -55,7 +55,12 @@ try:
         serverSelectionTimeoutMS=5000
     )
 
-    db = client.get_default_database() or client["dairy-sonogram"]
+    db = client.get_default_database()
+
+    # FIX: NO boolean check on Database object
+    if db is None:
+        db = client["dairy-sonogram"]
+
     collection = db["sonogramresults"]
 
     print(f"✅ MongoDB Connected successfully to database: {db.name}")
@@ -70,14 +75,14 @@ except Exception as e:
 # =========================
 try:
     print("🔥 Warming up ML model...")
-    load_model()   # FIXED (was get_model)
+    load_model()
     print("✅ Model loaded and ready")
 except Exception as e:
     print("⚠️ Model warmup failed:", e)
 
 
 # =========================
-# SAFE OBJECTID HELPER
+# SAFE OBJECTID
 # =========================
 def safe_objectid(id_str):
     try:
@@ -92,14 +97,14 @@ def safe_objectid(id_str):
 @app.task(name="predict_task")
 def predict_task(sonogram_id, image_path):
     print(f"📥 Task received | Record ID: {sonogram_id}")
-    print(f"🖼️ Input Image URL: {image_path}")
+    print(f"🖼️ Image URL: {image_path}")
 
     try:
         obj_id = safe_objectid(sonogram_id)
         if obj_id is None:
             raise ValueError("Invalid MongoDB ObjectId")
 
-        # UPDATE STATUS → PROCESSING
+        # Update status → PROCESSING
         collection.update_one(
             {"_id": obj_id},
             {"$set": {"status": "PROCESSING"}}
@@ -113,7 +118,7 @@ def predict_task(sonogram_id, image_path):
         result = predict_image(image_path)
 
         if not isinstance(result, dict):
-            raise ValueError("Model returned invalid response type")
+            raise ValueError("Model returned invalid response")
 
         if result.get("status") != "success":
             raise Exception(result.get("error", "Unknown prediction error"))
@@ -124,7 +129,7 @@ def predict_task(sonogram_id, image_path):
         print(f"✅ Prediction: {classification} | Conf: {confidence:.2f}")
 
         # =========================
-        # SAVE TO MONGO
+        # SAVE RESULT
         # =========================
         collection.update_one(
             {"_id": obj_id},
