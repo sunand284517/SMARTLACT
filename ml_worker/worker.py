@@ -19,24 +19,25 @@ if not MONGO_URI:
     raise ValueError("❌ MONGO_URI is not set")
 
 # =========================
-# 🔥 CELERY SETUP
+# 🔥 CELERY SETUP & SSL CRASH FIX
 # =========================
+# Passing the SSL settings directly into the constructor blocks the URL parser error
 app = Celery(
     "worker",
     broker=REDIS_URL,
-    backend=REDIS_URL
+    backend=REDIS_URL,
+    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE}
 )
 
-# ✅ FIX FOR Upstash (TLS Redis)
-app.conf.broker_use_ssl = {
-    "ssl_cert_reqs": ssl.CERT_NONE
-}
+# Alternative fallback configuration properties
+app.conf.update(
+    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+    result_backend_transport_options={"ssl_cert_reqs": ssl.CERT_NONE}
+)
 
-app.conf.redis_backend_use_ssl = {
-    "ssl_cert_reqs": ssl.CERT_NONE
-}
-
-# ✅ Windows / safe mode
+# ✅ Windows / safe mode local runner option
 if sys.platform == "win32":
     app.conf.update(
         worker_pool="solo",
@@ -74,14 +75,14 @@ def predict_task(sonogram_id, image_path):
         print("🔄 Running ML model...")
 
         # =========================
-        # 🔥 ML MODEL
+        # 🔥 ML MODEL INFERENCE
         # =========================
         classification, confidence, predicted_yield = predict_image(image_path)
 
         print(f"✅ Prediction: {classification}, {confidence}, {predicted_yield}")
 
         # =========================
-        # Save result
+        # Save result to DB
         # =========================
         collection.update_one(
             {"_id": ObjectId(sonogram_id)},
