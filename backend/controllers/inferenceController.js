@@ -2,74 +2,98 @@ const SonogramResult = require('../models/SonogramResult');
 const client = require('../services/queueService');
 const path = require('path');
 
-// @desc    Upload sonogram image and trigger Celery ML worker
-// @route   POST /api/inference/upload
 exports.uploadSonogram = async (req, res) => {
     try {
         if (!req.file) {
-            return res.status(400).json({ message: 'No image file provided' });
+            return res.status(400).json({
+                success: false,
+                message: 'No image file provided'
+            });
         }
-        
+
         const cowId = req.body.cowId || 'Unknown Cow';
-        
-        // Use the absolute path so your Python script can easily locate the file on the server
         const absoluteImagePath = path.resolve(req.file.path);
 
-        // 1. Create tracking document in MongoDB matching your schema keys
         const sonogram = new SonogramResult({
             user: req.user.id,
             cowId,
-            imagePath: absoluteImagePath // ✅ Converted to match schema and Python parameters!
+            imagePath: absoluteImagePath
         });
+
         await sonogram.save();
 
-        console.log(`✉️ Dispatching job to Redis queue for Record ID: ${sonogram._id}`);
+        console.log(`✉️ Dispatching job for Record ID: ${sonogram._id}`);
 
-        // 2. Trigger task to match your Python @app.task(name="predict_task") configuration exactly
-        const task = client.createTask('predict_task'); // ✅ Fixed task name matching
-        
-        // Send arguments sequentially matching: predict_task(sonogram_id, image_path)
-        const result = task.delay(sonogram._id.toString(), absoluteImagePath);
+        const task = client.createTask('predict_task');
 
-        res.json({ 
-            message: 'Image uploaded successfully. Analysis in progress. ✅', 
+        const result = await task.applyAsync([
+            sonogram._id.toString(),
+            absoluteImagePath
+        ]);
+
+        console.log('✅ Task queued:', result);
+
+        return res.status(200).json({
+            success: true,
+            message: 'Image uploaded successfully. Analysis in progress.',
             sonogramId: sonogram._id,
-            taskId: result.taskId
+            taskId: result.taskId || null
         });
-        
-   } catch (error) {
+
+    } catch (error) {
         console.error('❌ UPLOAD CONTROLLER ERROR:', error);
-        res.status(500).json({
+
+        return res.status(500).json({
+            success: false,
             message: 'Server error during upload',
             error: error.message
         });
     }
 };
 
-// @desc    Get historical data list for the logged-in user
-// @route   GET /api/inference/history
 exports.getSonograms = async (req, res) => {
     try {
-        // Fetch history belonging to the logged-in user, ordered by newest first
-        const results = await SonogramResult.find({ user: req.user.id }).sort({ createdAt: -1 });
-        res.json(results);
+        const results = await SonogramResult
+            .find({ user: req.user.id })
+            .sort({ createdAt: -1 });
+
+        res.status(200).json(results);
+
     } catch (error) {
-        console.error('❌ FETCH HISTORY ERROR:', error.message);
-        res.status(500).json({ message: 'Server error while fetching history' });
+        console.error('❌ FETCH HISTORY ERROR:', error);
+
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching history'
+        });
     }
 };
 
-// @desc    Remove an old sonogram record and cancel track trace
-// @route   DELETE /api/inference/:id
 exports.deleteSonogram = async (req, res) => {
     try {
-        const result = await SonogramResult.findOneAndDelete({ _id: req.params.id, user: req.user.id });
+        const result = await SonogramResult.findOneAndDelete({
+            _id: req.params.id,
+            user: req.user.id
+        });
+
         if (!result) {
-            return res.status(404).json({ message: 'Result not found or unauthorized' });
+            return res.status(404).json({
+                success: false,
+                message: 'Result not found or unauthorized'
+            });
         }
-        res.json({ message: 'Sonogram deleted successfully from backend ✅' });
+
+        res.status(200).json({
+            success: true,
+            message: 'Sonogram deleted successfully'
+        });
+
     } catch (error) {
-        console.error('❌ DELETE RECORD ERROR:', error.message);
-        res.status(500).json({ message: 'Server error during deletion' });
+        console.error('❌ DELETE ERROR:', error);
+
+        res.status(500).json({
+            success: false,
+            message: 'Server error during deletion'
+        });
     }
 };
