@@ -30,10 +30,14 @@ exports.uploadSonogram = async (req, res) => {
             sonogramId: sonogram._id,
             taskId: result.taskId
         });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Server error during upload' });
-    }
+   } catch (error) {
+    console.error('UPLOAD ERROR:', error);
+
+    res.status(500).json({
+        message: 'Server error during upload',
+        error: error.message
+    });
+}
 };
 
 exports.getSonograms = async (req, res) => {
