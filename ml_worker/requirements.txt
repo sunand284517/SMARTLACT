@@ -5,3 +5,4 @@ torchvision
 Pillow
 pymongo
 python-dotenv
+gdown
