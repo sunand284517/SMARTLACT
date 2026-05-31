@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
@@ -6,9 +5,10 @@ import requests
 from io import BytesIO
 from PIL import Image
 import gdown
+import os
 
 # =========================
-# LABELS
+# LABELS (MUST MATCH TRAINING)
 # =========================
 CLASSES = [
     'Dry Period',
@@ -18,9 +18,6 @@ CLASSES = [
     'Peri-Partum'
 ]
 
-# =========================
-# MODEL ID (GOOGLE DRIVE)
-# =========================
 MODEL_ID = "1V8Lobs36IXWHwVs9C7Y01wxU-tBew6gb"
 MODEL_PATH = "cow_model.pth"
 
@@ -28,7 +25,7 @@ _cached = None
 
 
 # =========================
-# MODEL ARCHITECTURE (FIXED)
+# MODEL (EXACT TRAINING MATCH)
 # =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
@@ -45,13 +42,11 @@ class CowSonogramCNN(nn.Module):
 
             nn.Conv2d(32, 64, 3, padding=1),
             nn.ReLU(),
-
-            # ✅ FIX: avoids shape mismatch issues
-            nn.AdaptiveAvgPool2d((7, 7))
+            nn.MaxPool2d(2)
         )
 
         self.fc_layer = nn.Sequential(
-            nn.Linear(64 * 7 * 7, 512),
+            nn.Linear(64 * 28 * 28, 512),
             nn.ReLU()
         )
 
@@ -66,7 +61,6 @@ class CowSonogramCNN(nn.Module):
         class_logits = self.classification_head(x)
         yield_pred = self.regression_head(x)
 
-        # always return exactly 2 values
         return class_logits, yield_pred
 
 
@@ -78,16 +72,12 @@ def download_model():
         return
 
     print("📥 Downloading model from Google Drive...")
-
     url = f"https://drive.google.com/uc?id={MODEL_ID}"
     gdown.download(url, MODEL_PATH, quiet=False)
 
-    if not os.path.exists(MODEL_PATH):
-        raise Exception("❌ Model download failed")
-
 
 # =========================
-# LOAD MODEL (CACHED)
+# LOAD MODEL
 # =========================
 def load_model():
     global _cached
@@ -102,8 +92,8 @@ def load_model():
     model = CowSonogramCNN(num_classes=len(CLASSES)).to(device)
 
     state = torch.load(MODEL_PATH, map_location=device)
-    model.load_state_dict(state, strict=True)
 
+    model.load_state_dict(state, strict=True)
     model.eval()
 
     _cached = (model, device)
@@ -114,7 +104,7 @@ def load_model():
 
 
 # =========================
-# IMAGE TRANSFORM
+# IMAGE TRANSFORM (MUST MATCH TRAINING)
 # =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -123,12 +113,11 @@ transform = transforms.Compose([
 
 
 # =========================
-# PREDICT FUNCTION (SAFE)
+# PREDICT FUNCTION
 # =========================
 def predict_image(image_path):
     model, device = load_model()
 
-    # Load image safely
     try:
         if image_path.startswith("http"):
             response = requests.get(image_path, timeout=10)
@@ -136,10 +125,7 @@ def predict_image(image_path):
         else:
             image = Image.open(image_path).convert("RGB")
     except Exception as e:
-        return {
-            "status": "failed",
-            "error": f"Image loading failed: {str(e)}"
-        }
+        return {"status": "failed", "error": str(e)}
 
     image = transform(image).unsqueeze(0).to(device)
 
@@ -147,11 +133,11 @@ def predict_image(image_path):
         with torch.no_grad():
             outputs = model(image)
 
-            # ✅ SAFE UNPACKING
+            # SAFE CHECK
             if not isinstance(outputs, (tuple, list)) or len(outputs) != 2:
                 return {
                     "status": "failed",
-                    "error": f"Unexpected model output: {type(outputs)}"
+                    "error": "Model output mismatch"
                 }
 
             class_logits, yield_pred = outputs
@@ -159,19 +145,12 @@ def predict_image(image_path):
             probs = torch.softmax(class_logits, dim=1)
             conf, idx = torch.max(probs, 1)
 
-            classification = CLASSES[idx.item()]
-            confidence = float(conf.item())
-            predicted_yield = float(yield_pred.item())
-
-        return {
-            "status": "success",
-            "classification": classification,
-            "confidence": confidence,
-            "predicted_yield": predicted_yield
-        }
+            return {
+                "status": "success",
+                "classification": CLASSES[idx.item()],
+                "confidence": float(conf.item()),
+                "predicted_yield": float(yield_pred.item())
+            }
 
     except Exception as e:
-        return {
-            "status": "failed",
-            "error": str(e)
-        }
+        return {"status": "failed", "error": str(e)}
