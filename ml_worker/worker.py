@@ -8,21 +8,27 @@ from celery_app import celery
 MONGO_URI = os.environ.get("MONGO_URI")
 
 if not MONGO_URI:
-    raise ValueError("MONGO_URI not set")
+    raise ValueError("MONGO_URI environment variable is missing from Railway settings!")
 
 client = MongoClient(MONGO_URI)
-db = client["dairy-sonogram"]
+
+# =========================================================================
+# 🎯 HARD TARGET: FORCE PRODUCTION DATABASE
+# Points explicitly to 'smartlact' to override any default system fallbacks
+# =========================================================================
+db = client["smartlact"]
 collection = db["sonogramresults"]
 
-print(f"✅ MongoDB Connected: {db.name}")
+print(f"✅ Celery Connected to Production Database: [{db.name}] | Collection: [{collection.name}]")
 
 _model = None
 
 def get_model():
     global _model
     if _model is None:
-        print("🔥 Loading ML model...")
+        print("🔥 Loading ML model weights into RAM...")
         _model = load_model()
+        print("✅ Model loaded successfully.")
     return _model
 
 
@@ -35,46 +41,56 @@ def safe_objectid(id_str):
 
 @celery.task(name="predict_task") 
 def predict_task(sonogram_id, image_path):
-
-    print(f"📥 Received task: {sonogram_id}")
+    print(f"\n📥 Received task for processing ID: {sonogram_id}")
 
     obj_id = safe_objectid(sonogram_id)
     if not obj_id:
-        return {"status": "failed", "error": "Invalid ObjectId"}
+        return {"status": "failed", "error": "Invalid ObjectId structure"}
 
     try:
+        # Move document status into processing state
         collection.update_one(
             {"_id": obj_id},
             {"$set": {"status": "processing"}}
         )
 
         model = get_model()
-        
-        # NOTE: If your predict_image function inside model.py accepts the model instance, 
-        # change this line to: result = predict_image(image_path, model)
         result = predict_image(image_path)
 
-        if result.get("status") == "failed":
-            raise Exception(result.get("error"))
+        if not result or result.get("status") == "failed":
+            raise Exception(result.get("error", "Model inference returned a failure status"))
 
-        collection.update_one(
+        classification = result.get("classification", "Unknown")
+        confidence = float(result.get("confidence", 0.0))
+        yield_litres = float(result.get("yield_litres", 0.0))
+
+        # =========================================================================
+        # 📊 VISIBLE LOG BLOCKS IN RAILWAY
+        # =========================================================================
+        print("\n🚀 ================= ML INFERENCE EXECUTION =================")
+        print(f"📋 CLASSIFICATION STAGE : {classification}")
+        print(f"📈 CONFIDENCE LEVEL      : {confidence * 100:.2f}%")
+        print(f"🥛 PREDICTED MILK YIELD  : {yield_litres} Litres")
+        print("============================================================\n")
+
+        # Update database document with completed metrics fields
+        db_update = collection.update_one(
             {"_id": obj_id},
             {
                 "$set": {
                     "status": "completed",
-                    "classification": result["classification"],
-                    "confidence": float(result["confidence"]),
-                    "yield_litres": float(result["yield_litres"])
+                    "classification": classification,
+                    "confidence": confidence,
+                    "yield_litres": yield_litres
                 }
             }
         )
-
-        print(f"✅ Completed: {sonogram_id}")
+        
+        print(f"✅ DB Synchronized -> Matched: {db_update.matched_count} | Modified: {db_update.modified_count}")
         return {"status": "success"}
 
     except Exception as e:
-        print(f"❌ Failed: {str(e)}")
-
+        print(f"❌ Worker Process Failure: {str(e)}")
         collection.update_one(
             {"_id": obj_id},
             {
@@ -84,5 +100,4 @@ def predict_task(sonogram_id, image_path):
                 }
             }
         )
-
         return {"status": "failed", "error": str(e)}
