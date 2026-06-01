@@ -1,5 +1,4 @@
 import os
-import sys
 import ssl
 from celery import Celery
 from pymongo import MongoClient
@@ -27,31 +26,25 @@ if not MONGO_URI:
 app = Celery(
     "worker",
     broker=REDIS_URL,
-    backend=REDIS_URL,
-    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
-    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE}
+    backend=REDIS_URL
 )
 
+# ✅ Required for Upstash (TLS)
 app.conf.update(
     broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
     redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
-    result_backend_transport_options={"ssl_cert_reqs": ssl.CERT_NONE}
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    timezone="UTC",
+    enable_utc=True
 )
-
-if sys.platform == "win32":
-    app.conf.update(worker_pool="solo", worker_prefetch_multiplier=1)
 
 
 # =========================
-# MONGODB (🔥 FIXED HERE)
+# MONGODB
 # =========================
-client = MongoClient(
-    MONGO_URI,
-    connectTimeoutMS=5000,
-    serverSelectionTimeoutMS=5000
-)
-
-# ✅ ALWAYS use direct DB name (SAFE)
+client = MongoClient(MONGO_URI)
 db = client["dairy-sonogram"]
 collection = db["sonogramresults"]
 
@@ -59,14 +52,11 @@ print(f"✅ MongoDB Connected: {db.name}")
 
 
 # =========================
-# MODEL WARMUP
+# MODEL LOAD
 # =========================
-try:
-    print("🔥 Warming up ML model...")
-    load_model()
-    print("✅ Model ready")
-except Exception as e:
-    print("⚠️ Model warmup failed:", e)
+print("🔥 Loading ML model...")
+load_model()
+print("✅ Model ready")
 
 
 # =========================
@@ -85,26 +75,37 @@ def safe_objectid(id_str):
 @app.task(name="predict_task")
 def predict_task(sonogram_id, image_path):
 
-    try:
-        obj_id = safe_objectid(sonogram_id)
-        if not obj_id:
-            raise ValueError("Invalid ObjectId")
+    print(f"📥 Received task: {sonogram_id}")
 
+    obj_id = safe_objectid(sonogram_id)
+    if not obj_id:
+        return {"status": "failed", "error": "Invalid ObjectId"}
+
+    try:
+        # ======================
+        # 1. SET PROCESSING
+        # ======================
         collection.update_one(
             {"_id": obj_id},
-            {"$set": {"status": "PROCESSING"}}
+            {"$set": {"status": "processing"}}  # ✅ lowercase FIX
         )
 
+        # ======================
+        # 2. RUN MODEL
+        # ======================
         result = predict_image(image_path)
 
         if result.get("status") == "failed":
-            raise ValueError(result.get("error"))
+            raise Exception(result.get("error"))
 
+        # ======================
+        # 3. SAVE RESULT
+        # ======================
         collection.update_one(
             {"_id": obj_id},
             {
                 "$set": {
-                    "status": "COMPLETED",
+                    "status": "completed",  # ✅ lowercase FIX
                     "classification": result["classification"],
                     "confidence": float(result["confidence"]),
                     "yield_litres": float(result["yield_litres"])
@@ -112,16 +113,17 @@ def predict_task(sonogram_id, image_path):
             }
         )
 
-        return {"status": "success", **result}
+        print(f"✅ Completed: {sonogram_id}")
+
+        return {"status": "success"}
 
     except Exception as e:
+        print(f"❌ Failed: {str(e)}")
 
-        obj_id = safe_objectid(sonogram_id)
-        if obj_id:
-            collection.update_one(
-                {"_id": obj_id},
-                {"$set": {"status": "FAILED", "errorReason": str(e)}}
-            )
+        collection.update_one(
+            {"_id": obj_id},
+            {"$set": {"status": "failed", "errorReason": str(e)}}
+        )
 
         return {"status": "failed", "error": str(e)}
 
