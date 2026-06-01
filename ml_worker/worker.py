@@ -3,7 +3,7 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 
 from model import predict_image, load_model
-from celery_app import celery   # ✅ IMPORTANT FIX
+from celery_app import celery 
 
 MONGO_URI = os.environ.get("MONGO_URI")
 
@@ -33,7 +33,7 @@ def safe_objectid(id_str):
         return None
 
 
-@celery.task(name="predict_task")   # ✅ FIXED (USE CELERY INSTANCE)
+@celery.task(name="predict_task") 
 def predict_task(sonogram_id, image_path):
 
     print(f"📥 Received task: {sonogram_id}")
@@ -49,6 +49,9 @@ def predict_task(sonogram_id, image_path):
         )
 
         model = get_model()
+        
+        # NOTE: If your predict_image function inside model.py accepts the model instance, 
+        # change this line to: result = predict_image(image_path, model)
         result = predict_image(image_path)
 
         if result.get("status") == "failed":
