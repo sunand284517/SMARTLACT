@@ -1,5 +1,6 @@
 const SonogramResult = require('../models/SonogramResult');
-const axios = require('axios'); // ✅ Used to call Python API
+const axios = require('axios');
+require('dotenv').config(); // ✅ Load env variables
 
 // @desc    Upload sonogram image and trigger Celery processing
 // @route   POST /api/inference/upload
@@ -14,7 +15,7 @@ exports.uploadSonogram = async (req, res) => {
 
         const cowId = req.body.cowId || 'Unknown Cow';
 
-        // ✅ Cloudinary URL (already correct in your setup)
+        // ✅ Cloudinary URL
         const secureCloudURL = req.file.path;
 
         // ✅ 1. Save record in MongoDB
@@ -31,18 +32,31 @@ exports.uploadSonogram = async (req, res) => {
         console.log(`✅ Saved to DB with ID: ${sonogram._id}`);
         console.log(`🌐 Image URL: ${secureCloudURL}`);
 
-        // ✅ 2. CALL PYTHON FLASK API → which triggers Celery
+        // ✅ 2. CALL PYTHON API (FIXED)
         try {
-            const response = await axios.post('http://localhost:5000/process', {
-                result_id: sonogram._id.toString(),
-                image_path: secureCloudURL
-            });
+            const PYTHON_API_URL = process.env.PYTHON_API_URL;
 
-            console.log('🚀 Celery task triggered:', response.data);
+            console.log("🚀 Calling Python API:", PYTHON_API_URL);
+
+            const response = await axios.post(
+                `${PYTHON_API_URL}/process`,
+                {
+                    result_id: sonogram._id.toString(),
+                    image_path: secureCloudURL
+                },
+                {
+                    timeout: 30000 // ⏱️ prevent timeout issues
+                }
+            );
+
+            console.log('✅ Celery task triggered:', response.data);
+
         } catch (apiError) {
-            console.error('❌ Failed to call Python API:', apiError.message);
+            console.error('❌ Python API ERROR:');
+            console.error('Message:', apiError.message);
+            console.error('Data:', apiError.response?.data);
 
-            // Optional: mark as FAILED if API call fails
+            // ❗ Mark as FAILED if API fails
             await SonogramResult.findByIdAndUpdate(sonogram._id, {
                 status: "FAILED"
             });
@@ -53,7 +67,7 @@ exports.uploadSonogram = async (req, res) => {
             });
         }
 
-        // ✅ 3. Send success response
+        // ✅ 3. Success response
         return res.status(200).json({
             success: true,
             message: 'Image uploaded & processing started ✅',
