@@ -39,14 +39,11 @@ app.conf.update(
 )
 
 if sys.platform == "win32":
-    app.conf.update(
-        worker_pool="solo",
-        worker_prefetch_multiplier=1
-    )
+    app.conf.update(worker_pool="solo", worker_prefetch_multiplier=1)
 
 
 # =========================
-# MONGODB (FIXED SAFE)
+# MONGODB (🔥 FIXED HERE)
 # =========================
 client = MongoClient(
     MONGO_URI,
@@ -54,21 +51,22 @@ client = MongoClient(
     serverSelectionTimeoutMS=5000
 )
 
-db = client.get_database() if client.get_database() else client["dairy-sonogram"]
+# ✅ ALWAYS use direct DB name (SAFE)
+db = client["dairy-sonogram"]
 collection = db["sonogramresults"]
 
 print(f"✅ MongoDB Connected: {db.name}")
 
 
 # =========================
-# MODEL WARMUP (SAFE)
+# MODEL WARMUP
 # =========================
 try:
     print("🔥 Warming up ML model...")
     load_model()
     print("✅ Model ready")
 except Exception as e:
-    print("⚠️ Model warmup failed (non-fatal):", e)
+    print("⚠️ Model warmup failed:", e)
 
 
 # =========================
@@ -87,9 +85,6 @@ def safe_objectid(id_str):
 @app.task(name="predict_task")
 def predict_task(sonogram_id, image_path):
 
-    print(f"📥 Task | {sonogram_id}")
-    print(f"🖼️ Image | {image_path}")
-
     try:
         obj_id = safe_objectid(sonogram_id)
         if not obj_id:
@@ -100,64 +95,35 @@ def predict_task(sonogram_id, image_path):
             {"$set": {"status": "PROCESSING"}}
         )
 
-        print("🔄 Running inference...")
-
         result = predict_image(image_path)
 
-        # =========================
-        # HARD VALIDATION (IMPORTANT)
-        # =========================
-        if not isinstance(result, dict):
-            raise ValueError("Model returned invalid output")
-
         if result.get("status") == "failed":
-            raise ValueError(result.get("error", "Prediction failed"))
-
-        classification = result.get("classification")
-        confidence = float(result.get("confidence", 0.0))
-        yield_litres = float(result.get("yield_litres", 0.0))
-
-        print(f"✅ {classification} | Conf={confidence:.3f}")
+            raise ValueError(result.get("error"))
 
         collection.update_one(
             {"_id": obj_id},
             {
                 "$set": {
                     "status": "COMPLETED",
-                    "classification": classification,
-                    "confidence": confidence,
-                    "yield_litres": yield_litres
+                    "classification": result["classification"],
+                    "confidence": float(result["confidence"]),
+                    "yield_litres": float(result["yield_litres"])
                 }
             }
         )
 
-        return {
-            "status": "success",
-            "classification": classification,
-            "confidence": confidence,
-            "yield_litres": yield_litres
-        }
+        return {"status": "success", **result}
 
     except Exception as e:
-
-        print(f"❌ ERROR: {str(e)}")
 
         obj_id = safe_objectid(sonogram_id)
         if obj_id:
             collection.update_one(
                 {"_id": obj_id},
-                {
-                    "$set": {
-                        "status": "FAILED",
-                        "errorReason": str(e)
-                    }
-                }
+                {"$set": {"status": "FAILED", "errorReason": str(e)}}
             )
 
-        return {
-            "status": "failed",
-            "error": str(e)
-        }
+        return {"status": "failed", "error": str(e)}
 
 
 print("🚀 Celery Worker Ready")
