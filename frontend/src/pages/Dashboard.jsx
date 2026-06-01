@@ -23,7 +23,7 @@ const Dashboard = () => {
   const fetchHistory = async () => {
     try {
       const res = await api.get('/inference/history');
-      setHistory(res.data);
+      setHistory(res.data?.data || res.data || []);
     } catch (err) {
       console.error('Failed to fetch history', err);
     }
