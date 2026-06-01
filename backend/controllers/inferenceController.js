@@ -40,7 +40,16 @@ exports.uploadSonogram = async (req, res) => {
         console.log("🚀 Calling Python API:", PYTHON_API_URL);
 
       // REMOVE axios call completely
-console.log("Task will be handled by Celery worker automatically");
+const response = await axios.post(
+    `${process.env.PYTHON_API_URL}/process`,
+    {
+        result_id: sonogram._id.toString(),
+        image_path: secureCloudURL
+    },
+    { timeout: 30000 }
+);
+
+console.log("Task triggered:", response.data);
 
       
 
