@@ -2,7 +2,6 @@ const SonogramResult = require('../models/SonogramResult');
 const axios = require('axios');
 require('dotenv').config();
 
-
 // =========================
 // UPLOAD SONOGRAM
 // =========================
@@ -18,29 +17,27 @@ exports.uploadSonogram = async (req, res) => {
         const cowId = req.body.cowId || 'Unknown Cow';
         const secureCloudURL = req.file.path;
 
-        // ✅ FIXED INITIALIZATION OBJECT TO MATCH SCHEMA AND PYTHON WORKER
+        // ✅ Created entry with lowercase states and matched metrics fields
         const sonogram = await SonogramResult.create({
             user: req.user.id,
             cowId,
             imagePath: secureCloudURL,
-            status: "pending",               // ✅ FIX: Lowercase to avoid state mismatches
+            status: "pending",               
             classification: "Awaiting process...",
             confidence: 0,
-            yield_litres: 0                 // ✅ FIX: Changed from predictedYield to yield_litres
+            yield_litres: 0                 
         });
 
         console.log(`✅ Saved to DB with ID: ${sonogram._id}`);
         console.log(`🌐 Image URL: ${secureCloudURL}`);
 
         const PYTHON_API_URL = process.env.PYTHON_API_URL;
-
         if (!PYTHON_API_URL) {
             throw new Error("PYTHON_API_URL is not set in environment variables");
         }
 
         console.log("🚀 Calling Python API:", PYTHON_API_URL);
 
-        // Handoff to Python API trigger on Railway
         const response = await axios.post(
             `${process.env.PYTHON_API_URL}/process`,
             {
@@ -61,14 +58,12 @@ exports.uploadSonogram = async (req, res) => {
 
     } catch (error) {
         console.error('❌ ERROR:', error.message);
-
         return res.status(500).json({
             success: false,
             message: error.message
         });
     }
 };
-
 
 // =========================
 // GET SONOGRAM HISTORY
@@ -91,14 +86,12 @@ exports.getSonograms = async (req, res) => {
     }
 };
 
-
 // =========================
 // DELETE SONOGRAM
 // =========================
 exports.deleteSonogram = async (req, res) => {
     try {
         const { id } = req.params;
-
         const deleted = await SonogramResult.findOneAndDelete({
             _id: id,
             user: req.user.id
