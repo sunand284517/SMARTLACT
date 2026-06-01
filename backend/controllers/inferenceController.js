@@ -2,7 +2,10 @@ const SonogramResult = require('../models/SonogramResult');
 const axios = require('axios');
 require('dotenv').config();
 
-// @desc Upload sonogram image and trigger Celery processing
+
+// =========================
+// UPLOAD SONOGRAM
+// =========================
 exports.uploadSonogram = async (req, res) => {
     try {
         if (!req.file) {
@@ -28,7 +31,6 @@ exports.uploadSonogram = async (req, res) => {
         console.log(`✅ Saved to DB with ID: ${sonogram._id}`);
         console.log(`🌐 Image URL: ${secureCloudURL}`);
 
-        // ✅ FIX: Ensure URL exists
         const PYTHON_API_URL = process.env.PYTHON_API_URL;
 
         if (!PYTHON_API_URL) {
@@ -43,9 +45,7 @@ exports.uploadSonogram = async (req, res) => {
                 result_id: sonogram._id.toString(),
                 image_path: secureCloudURL
             },
-            {
-                timeout: 30000
-            }
+            { timeout: 30000 }
         );
 
         console.log('✅ Celery task triggered:', response.data);
@@ -60,6 +60,61 @@ exports.uploadSonogram = async (req, res) => {
     } catch (error) {
         console.error('❌ ERROR:', error.message);
 
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+
+// =========================
+// GET SONOGRAM HISTORY
+// =========================
+exports.getSonograms = async (req, res) => {
+    try {
+        const data = await SonogramResult.find({ user: req.user.id })
+            .sort({ createdAt: -1 });
+
+        return res.status(200).json({
+            success: true,
+            data
+        });
+
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+
+// =========================
+// DELETE SONOGRAM
+// =========================
+exports.deleteSonogram = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const deleted = await SonogramResult.findOneAndDelete({
+            _id: id,
+            user: req.user.id
+        });
+
+        if (!deleted) {
+            return res.status(404).json({
+                success: false,
+                message: "Record not found"
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Deleted successfully"
+        });
+
+    } catch (error) {
         return res.status(500).json({
             success: false,
             message: error.message
