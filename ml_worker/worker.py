@@ -1,87 +1,39 @@
 import os
-import ssl
-from celery import Celery
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
 from model import predict_image, load_model
+from celery_app import celery   # ✅ IMPORTANT FIX
 
-
-# =========================
-# ENV VARIABLES
-# =========================
-REDIS_URL = os.environ.get("CELERY_BROKER_URL")
 MONGO_URI = os.environ.get("MONGO_URI")
 
-if not REDIS_URL:
-    raise ValueError("❌ CELERY_BROKER_URL is not set")
-
 if not MONGO_URI:
-    raise ValueError("❌ MONGO_URI is not set")
+    raise ValueError("MONGO_URI not set")
 
-
-# =========================
-# CELERY SETUP
-# =========================
-app = Celery(
-    "worker",
-    broker=REDIS_URL,
-    backend=REDIS_URL
-)
-
-app.conf.update(
-    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
-    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True
-)
-
-
-# =========================
-# MONGODB
-# =========================
 client = MongoClient(MONGO_URI)
 db = client["dairy-sonogram"]
 collection = db["sonogramresults"]
 
 print(f"✅ MongoDB Connected: {db.name}")
 
-
-# =========================
-# 🔥 MODEL (LAZY LOAD FIX)
-# =========================
 _model = None
 
 def get_model():
-    """
-    Load model ONLY ONCE per worker process.
-    Prevents memory explosion in Railway.
-    """
     global _model
     if _model is None:
-        print("🔥 Loading ML model (ONCE per worker)...")
+        print("🔥 Loading ML model...")
         _model = load_model()
-        print("✅ Model loaded successfully")
     return _model
 
 
-# =========================
-# SAFE OBJECTID
-# =========================
 def safe_objectid(id_str):
     try:
         return ObjectId(id_str)
-    except Exception:
+    except:
         return None
 
 
-# =========================
-# CELERY TASK
-# =========================
-@app.task(name="predict_task")
+@celery.task(name="predict_task")   # ✅ FIXED (USE CELERY INSTANCE)
 def predict_task(sonogram_id, image_path):
 
     print(f"📥 Received task: {sonogram_id}")
@@ -91,26 +43,17 @@ def predict_task(sonogram_id, image_path):
         return {"status": "failed", "error": "Invalid ObjectId"}
 
     try:
-        # ======================
-        # 1. MARK PROCESSING
-        # ======================
         collection.update_one(
             {"_id": obj_id},
             {"$set": {"status": "processing"}}
         )
 
-        # ======================
-        # 2. RUN MODEL (SAFE)
-        # ======================
         model = get_model()
         result = predict_image(image_path)
 
         if result.get("status") == "failed":
             raise Exception(result.get("error"))
 
-        # ======================
-        # 3. SAVE RESULT
-        # ======================
         collection.update_one(
             {"_id": obj_id},
             {
@@ -124,7 +67,6 @@ def predict_task(sonogram_id, image_path):
         )
 
         print(f"✅ Completed: {sonogram_id}")
-
         return {"status": "success"}
 
     except Exception as e:
@@ -141,6 +83,3 @@ def predict_task(sonogram_id, image_path):
         )
 
         return {"status": "failed", "error": str(e)}
-
-
-print("🚀 Celery Worker Ready (SAFE MODE)")
