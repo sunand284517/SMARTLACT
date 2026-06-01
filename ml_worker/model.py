@@ -21,6 +21,7 @@ MODEL_PATH = "cow_model.pth"
 _cached = None
 
 
+# ✅ FIXED MODEL (matches checkpoint EXACTLY)
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
         super().__init__()
@@ -39,20 +40,22 @@ class CowSonogramCNN(nn.Module):
             nn.MaxPool2d(2)
         )
 
-        self.shared = nn.Sequential(
+        # ⚠️ IMPORTANT: name must be fc_layer
+        self.fc_layer = nn.Sequential(
             nn.Linear(64 * 28 * 28, 512),
             nn.ReLU()
         )
 
-        self.class_head = nn.Linear(512, num_classes)
-        self.yield_head = nn.Linear(512, 1)
+        # ⚠️ MUST match checkpoint names
+        self.classification_head = nn.Linear(512, num_classes)
+        self.regression_head = nn.Linear(512, 1)
 
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
-        x = self.shared(x)
+        x = self.fc_layer(x)
 
-        return self.class_head(x), self.yield_head(x)
+        return self.classification_head(x), self.regression_head(x)
 
 
 def download_model():
@@ -75,13 +78,18 @@ def load_model():
 
     checkpoint = torch.load(MODEL_PATH, map_location=device)
 
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    # ✅ Handle both formats safely
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
+
     model.load_state_dict(state_dict, strict=True)
 
     model.eval()
     _cached = (model, device)
 
-    print("✅ Model loaded")
+    print("✅ Model loaded successfully")
     return _cached
 
 
@@ -122,4 +130,7 @@ def predict_image(image_path):
             }
 
     except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        return {
+            "status": "failed",
+            "error": str(e)
+        }
