@@ -7,9 +7,6 @@ from PIL import Image
 import gdown
 import os
 
-# =========================
-# CLASSES (DO NOT CHANGE ORDER)
-# =========================
 CLASSES = [
     'Dry Period',
     'Peak Lactation',
@@ -24,9 +21,6 @@ MODEL_PATH = "cow_model.pth"
 _cached = None
 
 
-# =========================
-# FIXED MODEL (MUST MATCH TRAINING)
-# =========================
 class CowSonogramCNN(nn.Module):
     def __init__(self, num_classes=5):
         super().__init__()
@@ -58,59 +52,39 @@ class CowSonogramCNN(nn.Module):
         x = torch.flatten(x, 1)
         x = self.shared(x)
 
-        class_logits = self.class_head(x)
-        yield_pred = self.yield_head(x)
-
-        return class_logits, yield_pred
+        return self.class_head(x), self.yield_head(x)
 
 
-# =========================
-# DOWNLOAD MODEL
-# =========================
 def download_model():
     if not os.path.exists(MODEL_PATH):
-        print("📥 Downloading model from Google Drive...")
+        print("📥 Downloading model...")
         url = f"https://drive.google.com/uc?id={MODEL_ID}"
         gdown.download(url, MODEL_PATH, quiet=False)
 
 
-# =========================
-# LOAD MODEL (SAFE)
-# =========================
 def load_model():
     global _cached
 
-    if _cached is not None:
+    if _cached:
         return _cached
 
     download_model()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     model = CowSonogramCNN(len(CLASSES)).to(device)
 
     checkpoint = torch.load(MODEL_PATH, map_location=device)
 
-    # FIXED: handle both formats safely
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        state_dict = checkpoint["model_state_dict"]
-    else:
-        state_dict = checkpoint
-
-    # IMPORTANT: strict=False avoids crashes after small mismatches
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict, strict=True)
 
     model.eval()
-
     _cached = (model, device)
 
-    print("✅ Model loaded and ready")
+    print("✅ Model loaded")
     return _cached
 
 
-# =========================
-# TRANSFORM (MUST MATCH TRAINING)
-# =========================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -121,14 +95,10 @@ transform = transforms.Compose([
 ])
 
 
-# =========================
-# PREDICTION (ROBUST)
-# =========================
 def predict_image(image_path):
     try:
         model, device = load_model()
 
-        # load image
         if image_path.startswith("http"):
             r = requests.get(image_path, timeout=10)
             img = Image.open(BytesIO(r.content)).convert("RGB")
@@ -143,10 +113,7 @@ def predict_image(image_path):
             probs = torch.softmax(class_logits, dim=1)
             conf, idx = torch.max(probs, 1)
 
-            yield_value = yield_pred.item()
-
-            # SAFETY FIX: prevent negative/zero nonsense
-            yield_value = max(0.1, float(yield_value))
+            yield_value = max(0.1, float(yield_pred.item()))
 
             return {
                 "classification": CLASSES[idx.item()],
@@ -155,7 +122,4 @@ def predict_image(image_path):
             }
 
     except Exception as e:
-        return {
-            "status": "failed",
-            "error": str(e)
-        }
+        return {"status": "failed", "error": str(e)}
