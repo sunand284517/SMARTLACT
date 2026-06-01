@@ -6,3 +6,5 @@ Pillow
 pymongo
 python-dotenv
 gdown
+flask
+gunicorn
