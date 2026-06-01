@@ -18,14 +18,15 @@ exports.uploadSonogram = async (req, res) => {
         const cowId = req.body.cowId || 'Unknown Cow';
         const secureCloudURL = req.file.path;
 
+        // ✅ FIXED INITIALIZATION OBJECT TO MATCH SCHEMA AND PYTHON WORKER
         const sonogram = await SonogramResult.create({
             user: req.user.id,
             cowId,
             imagePath: secureCloudURL,
-            status: "PENDING",
+            status: "pending",               // ✅ FIX: Lowercase to avoid state mismatches
             classification: "Awaiting process...",
             confidence: 0,
-            predictedYield: 0
+            yield_litres: 0                 // ✅ FIX: Changed from predictedYield to yield_litres
         });
 
         console.log(`✅ Saved to DB with ID: ${sonogram._id}`);
@@ -39,19 +40,17 @@ exports.uploadSonogram = async (req, res) => {
 
         console.log("🚀 Calling Python API:", PYTHON_API_URL);
 
-      // REMOVE axios call completely
-const response = await axios.post(
-    `${process.env.PYTHON_API_URL}/process`,
-    {
-        result_id: sonogram._id.toString(),
-        image_path: secureCloudURL
-    },
-    { timeout: 30000 }
-);
+        // Handoff to Python API trigger on Railway
+        const response = await axios.post(
+            `${process.env.PYTHON_API_URL}/process`,
+            {
+                result_id: sonogram._id.toString(),
+                image_path: secureCloudURL
+            },
+            { timeout: 30000 }
+        );
 
-console.log("Task triggered:", response.data);
-
-      
+        console.log("Task triggered:", response.data);
 
         return res.status(200).json({
             success: true,
