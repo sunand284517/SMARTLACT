@@ -1,3 +1,4 @@
+# celery_app.py
 import os
 import ssl
 from celery import Celery
@@ -14,8 +15,9 @@ celery = Celery(
 )
 
 celery.conf.update(
-    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
-    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+    # 🔒 CHANGED TO CERT_REQUIRED FOR SECURE UPSTASH CONNECTION
+    broker_use_ssl={"ssl_cert_reqs": ssl.CERT_REQUIRED},
+    redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_REQUIRED},
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
