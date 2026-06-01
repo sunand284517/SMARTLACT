@@ -29,7 +29,6 @@ app = Celery(
     backend=REDIS_URL
 )
 
-# ✅ Required for Upstash (TLS)
 app.conf.update(
     broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
     redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
@@ -52,11 +51,21 @@ print(f"✅ MongoDB Connected: {db.name}")
 
 
 # =========================
-# MODEL LOAD
+# 🔥 MODEL (LAZY LOAD FIX)
 # =========================
-print("🔥 Loading ML model...")
-load_model()
-print("✅ Model ready")
+_model = None
+
+def get_model():
+    """
+    Load model ONLY ONCE per worker process.
+    Prevents memory explosion in Railway.
+    """
+    global _model
+    if _model is None:
+        print("🔥 Loading ML model (ONCE per worker)...")
+        _model = load_model()
+        print("✅ Model loaded successfully")
+    return _model
 
 
 # =========================
@@ -83,16 +92,17 @@ def predict_task(sonogram_id, image_path):
 
     try:
         # ======================
-        # 1. SET PROCESSING
+        # 1. MARK PROCESSING
         # ======================
         collection.update_one(
             {"_id": obj_id},
-            {"$set": {"status": "processing"}}  # ✅ lowercase FIX
+            {"$set": {"status": "processing"}}
         )
 
         # ======================
-        # 2. RUN MODEL
+        # 2. RUN MODEL (SAFE)
         # ======================
+        model = get_model()
         result = predict_image(image_path)
 
         if result.get("status") == "failed":
@@ -105,7 +115,7 @@ def predict_task(sonogram_id, image_path):
             {"_id": obj_id},
             {
                 "$set": {
-                    "status": "completed",  # ✅ lowercase FIX
+                    "status": "completed",
                     "classification": result["classification"],
                     "confidence": float(result["confidence"]),
                     "yield_litres": float(result["yield_litres"])
@@ -122,10 +132,15 @@ def predict_task(sonogram_id, image_path):
 
         collection.update_one(
             {"_id": obj_id},
-            {"$set": {"status": "failed", "errorReason": str(e)}}
+            {
+                "$set": {
+                    "status": "failed",
+                    "errorReason": str(e)
+                }
+            }
         )
 
         return {"status": "failed", "error": str(e)}
 
 
-print("🚀 Celery Worker Ready")
+print("🚀 Celery Worker Ready (SAFE MODE)")
