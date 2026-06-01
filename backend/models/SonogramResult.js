@@ -16,7 +16,7 @@ const SonogramResultSchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        default: 'pending' // Matches lowercase Python lifecycle states
+        default: 'pending' // ✅ Lowercase to align with Celery updates
     },
     classification: {
         type: String,
@@ -28,13 +28,13 @@ const SonogramResultSchema = new mongoose.Schema({
     },
     yield_litres: {
         type: Number,
-        default: 0 // ✅ FIX: Named exactly like your Python worker field
+        default: 0 // ✅ Named exactly like your Python worker field
     },
     errorReason: {
         type: String
     }
 }, { 
-    timestamps: true // Automatically manages createdAt and updatedAt fields
+    timestamps: true 
 });
 
 module.exports = mongoose.model('SonogramResult', SonogramResultSchema);
