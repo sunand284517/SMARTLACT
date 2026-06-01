@@ -1,14 +1,13 @@
 from flask import Flask, request, jsonify
-from worker import predict_task
+from celery_app import celery   # ✅ IMPORTANT FIX
 
 app = Flask(__name__)
 
-# ✅ health check
 @app.route("/", methods=["GET"])
 def home():
     return "API is running", 200
 
-# ✅ endpoint used by Node.js
+
 @app.route("/process", methods=["POST"])
 def process():
     try:
@@ -20,8 +19,11 @@ def process():
         if not result_id or not image_path:
             return jsonify({"error": "Missing data"}), 400
 
-        # send task to Redis → Celery
-        predict_task.delay(result_id, image_path)
+        # ✅ SEND TASK PROPERLY TO CELERY
+        celery.send_task(
+            "predict_task",
+            args=[result_id, image_path]
+        )
 
         return jsonify({"status": "task sent"}), 200
 
