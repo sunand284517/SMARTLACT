@@ -11,11 +11,11 @@ celery = Celery(
     "worker",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["worker"]  # ✅ FIX: Forces Celery to look inside worker.py to discover tasks
+    include=["worker"]  # ✅ Register tasks out of worker.py
 )
 
 celery.conf.update(
-    # ✅ FIX: Safely validates Upstash SSL certs and clears the MitM warning
+    # ✅ Securely validates Upstash SSL certificates
     broker_use_ssl={"ssl_cert_reqs": ssl.CERT_REQUIRED},
     redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_REQUIRED},
     task_serializer="json",
