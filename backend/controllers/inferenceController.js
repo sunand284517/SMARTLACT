@@ -42,7 +42,7 @@ exports.uploadSonogram = async (req, res) => {
       // REMOVE axios call completely
 console.log("Task will be handled by Celery worker automatically");
 
-        console.log('✅ Celery task triggered:', response.data);
+      
 
         return res.status(200).json({
             success: true,
