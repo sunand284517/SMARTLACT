@@ -1,38 +1,40 @@
 const mongoose = require('mongoose');
 
 const SonogramResultSchema = new mongoose.Schema({
-  user: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User', 
-    required: true 
-  },
-  cowId: { 
-    type: String, 
-    required: false // ⚠️ Changed to false for now so it doesn't break if your form doesn't send it yet
-  },
-  imagePath: { 
-    type: String, 
-    required: true // ⚠️ Changed from imageUrl to imagePath to match your python worker argument exactly
-  },
-  status: { 
-    type: String, 
-    enum: ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED'], 
-    default: 'PENDING' 
-  },
-  classification: { 
-    type: String, 
-    default: "Awaiting process..." 
-  }, 
-  confidence: { 
-    type: Number, 
-    default: 0 
-  },
-  predictedYield: { 
-    type: Number, 
-    default: 0 
-  }
-}, {
-  timestamps: true // ⚠️ This automatically manages your createdAt and updatedAt fields for you!
+    user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    cowId: {
+        type: String,
+        default: 'Unknown Cow'
+    },
+    imagePath: {
+        type: String,
+        required: true
+    },
+    status: {
+        type: String,
+        default: 'pending' // Matches lowercase Python lifecycle states
+    },
+    classification: {
+        type: String,
+        default: 'Awaiting process...'
+    },
+    confidence: {
+        type: Number,
+        default: 0
+    },
+    yield_litres: {
+        type: Number,
+        default: 0 // ✅ FIX: Named exactly like your Python worker field
+    },
+    errorReason: {
+        type: String
+    }
+}, { 
+    timestamps: true // Automatically manages createdAt and updatedAt fields
 });
 
 module.exports = mongoose.model('SonogramResult', SonogramResultSchema);
