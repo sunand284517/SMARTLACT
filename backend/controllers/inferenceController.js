@@ -1,7 +1,7 @@
 const SonogramResult = require('../models/SonogramResult');
-const client = require('../services/queueService');
+const axios = require('axios'); // ✅ Used to call Python API
 
-// @desc    Upload sonogram image directly to cloud storage and pass URL to Python worker
+// @desc    Upload sonogram image and trigger Celery processing
 // @route   POST /api/inference/upload
 exports.uploadSonogram = async (req, res) => {
     try {
@@ -13,38 +13,51 @@ exports.uploadSonogram = async (req, res) => {
         }
 
         const cowId = req.body.cowId || 'Unknown Cow';
-        
-        // ✅ req.file.path automatically contains the secure Cloudinary web link URL (https://res.cloudinary.com/...)
+
+        // ✅ Cloudinary URL (already correct in your setup)
         const secureCloudURL = req.file.path;
 
-        // 1. Create a tracking document in MongoDB tracking the cloud image link
-        const sonogram = new SonogramResult({
+        // ✅ 1. Save record in MongoDB
+        const sonogram = await SonogramResult.create({
             user: req.user.id,
             cowId,
-            imagePath: secureCloudURL // ✅ Tracks the permanent web link directly
+            imagePath: secureCloudURL,
+            status: "PENDING",
+            classification: "Awaiting process...",
+            confidence: 0,
+            predictedYield: 0
         });
 
-        await sonogram.save();
+        console.log(`✅ Saved to DB with ID: ${sonogram._id}`);
+        console.log(`🌐 Image URL: ${secureCloudURL}`);
 
-        console.log(`✉️ Task generated in DB. Forwarding cloud URL to Upstash Redis for Record ID: ${sonogram._id}`);
-        console.log(`🌐 Secure Cloud URL: ${secureCloudURL}`);
+        // ✅ 2. CALL PYTHON FLASK API → which triggers Celery
+        try {
+            const response = await axios.post('http://localhost:5000/process', {
+                result_id: sonogram._id.toString(),
+                image_path: secureCloudURL
+            });
 
-        // 2. Instantiate the task matching your Python worker name exactly
-        const task = client.createTask('predict_task');
+            console.log('🚀 Celery task triggered:', response.data);
+        } catch (apiError) {
+            console.error('❌ Failed to call Python API:', apiError.message);
 
-        // ✅ Using task.delay to cleanly send the sequential string arguments down the queue
-        const result = task.delay(
-            sonogram._id.toString(),
-            secureCloudURL
-        );
+            // Optional: mark as FAILED if API call fails
+            await SonogramResult.findByIdAndUpdate(sonogram._id, {
+                status: "FAILED"
+            });
 
-        console.log('✅ Task queued smoothly through Upstash Redis wrapper:', result);
+            return res.status(500).json({
+                success: false,
+                message: 'Failed to trigger processing task'
+            });
+        }
 
+        // ✅ 3. Send success response
         return res.status(200).json({
             success: true,
-            message: 'Image uploaded to cloud successfully. Analysis loop triggered! ✅',
+            message: 'Image uploaded & processing started ✅',
             sonogramId: sonogram._id,
-            taskId: result.taskId || null,
             url: secureCloudURL
         });
 
@@ -58,6 +71,7 @@ exports.uploadSonogram = async (req, res) => {
         });
     }
 };
+
 
 // @desc    Get historical data list for the logged-in user
 // @route   GET /api/inference/history
@@ -79,6 +93,7 @@ exports.getSonograms = async (req, res) => {
     }
 };
 
+
 // @desc    Remove an old sonogram record
 // @route   DELETE /api/inference/:id
 exports.deleteSonogram = async (req, res) => {
@@ -97,7 +112,7 @@ exports.deleteSonogram = async (req, res) => {
 
         res.status(200).json({
             success: true,
-            message: 'Sonogram record removed from database successfully ✅'
+            message: 'Sonogram record removed successfully ✅'
         });
 
     } catch (error) {
